@@ -30,7 +30,12 @@ api.interceptors.response.use(
       originalRequest?.url?.includes('/auth/login') ||
       originalRequest?.url?.includes('/auth/refresh');
 
-    if (error.response?.status === 401 && !originalRequest._retry && !isAuthEndpoint) {
+    const isAuthError =
+      error.response?.status === 401 ||
+      (error.response?.status === 403 &&
+        error.response?.data?.error?.toLowerCase().includes('access token'));
+
+    if (isAuthError && !originalRequest._retry && !isAuthEndpoint) {
       originalRequest._retry = true;
       try {
         const res = await axios.post(

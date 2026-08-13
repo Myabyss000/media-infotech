@@ -83,15 +83,15 @@ export default function TicketsPage() {
   const fetchAuxiliaryData = async () => {
     try {
       const [gRes, cRes, vRes, iRes] = await Promise.all([
-        api.get('/api/groups'),
-        api.get('/api/clients?limit=100'),
-        api.get('/api/vehicles'),
-        api.get('/api/inventory?limit=100'),
+        api.get('/api/groups').catch(() => ({ data: [] })),
+        api.get('/api/clients?limit=100').catch(() => ({ data: [] })),
+        api.get('/api/vehicles').catch(() => ({ data: [] })),
+        api.get('/api/inventory?limit=100').catch(() => ({ data: [] })),
       ]);
       setGroups(gRes.data || []);
-      setClients(cRes.data?.data || []);
+      setClients(cRes.data?.data || cRes.data || []);
       setVehicles(vRes.data || []);
-      setInventoryList(iRes.data?.data || []);
+      setInventoryList(iRes.data?.data || iRes.data || []);
     } catch (e) {
       console.error('Failed to load options', e);
     }

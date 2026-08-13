@@ -2,16 +2,15 @@
 
 import React, { useState } from 'react';
 import { useAuth } from '@/contexts/auth-context';
-import { Clock, History, Users, Building2, ShieldCheck, Sparkles } from 'lucide-react';
+import { History, Users, Building2, Sparkles } from 'lucide-react';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { AttendanceCheckWidget } from '@/components/attendance/AttendanceCheckWidget';
 import { PersonalAttendanceHistory } from '@/components/attendance/PersonalAttendanceHistory';
 import { TeamAttendancePanel } from '@/components/attendance/TeamAttendancePanel';
 import { EnterpriseAttendancePanel } from '@/components/attendance/EnterpriseAttendancePanel';
 
 export default function AttendancePage() {
   const { user, hasPermission, hasRole } = useAuth();
-  const [activeTab, setActiveTab] = useState('checkin');
+  const [activeTab, setActiveTab] = useState('history');
 
   const canViewTeam = hasPermission('attendance', 'read') || hasPermission('attendance', 'approve') || hasRole('MANAGER', 'HR', 'ADMIN');
   const canViewEnterprise = hasRole('HR', 'ADMIN');
@@ -37,11 +36,6 @@ export default function AttendancePage() {
       {/* Role-Based Tabs Container */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>
-          <TabsTrigger value="checkin" className="flex items-center space-x-2">
-            <Clock size={16} />
-            <span>Check In / Out</span>
-          </TabsTrigger>
-          
           <TabsTrigger value="history" className="flex items-center space-x-2">
             <History size={16} />
             <span>My History</span>
@@ -62,25 +56,19 @@ export default function AttendancePage() {
           )}
         </TabsList>
 
-        {/* Tab 1: Check In / Out Widget */}
-        <TabsContent value="checkin" className="mt-6 space-y-6">
-          <AttendanceCheckWidget />
-          <PersonalAttendanceHistory />
-        </TabsContent>
-
-        {/* Tab 2: My Personal History */}
+        {/* Tab 1: My Personal History */}
         <TabsContent value="history" className="mt-6">
           <PersonalAttendanceHistory />
         </TabsContent>
 
-        {/* Tab 3: Team Roster & Manager Approvals */}
+        {/* Tab 2: Team Roster & Manager Approvals */}
         {canViewTeam && (
           <TabsContent value="team" className="mt-6">
             <TeamAttendancePanel />
           </TabsContent>
         )}
 
-        {/* Tab 4: Enterprise Master Log & Admin Geofence Settings */}
+        {/* Tab 3: Enterprise Master Log & Admin Geofence Settings */}
         {canViewEnterprise && (
           <TabsContent value="enterprise" className="mt-6">
             <EnterpriseAttendancePanel />
@@ -90,3 +78,4 @@ export default function AttendancePage() {
     </div>
   );
 }
+

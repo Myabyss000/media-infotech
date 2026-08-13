@@ -61,7 +61,7 @@ export function EnterpriseAttendancePanel() {
         api.get('/api/attendance/all'),
         api.get('/api/attendance/settings'),
       ]);
-      setAllAttendance(allRes.data.records || []);
+      setAllAttendance(allRes.data.records || allRes.data.data || []);
       setSettings(settingsRes.data);
       if (settingsRes.data) {
         setSettingsForm({

@@ -67,6 +67,7 @@ export function AttendanceCheckWidget({ onRecordUpdated }: { onRecordUpdated?: (
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
 
   // Note State & Check-In Action Mode
   const [actionType, setActionType] = useState<'CHECK_IN' | 'CHECK_OUT'>('CHECK_IN');
@@ -75,6 +76,30 @@ export function AttendanceCheckWidget({ onRecordUpdated }: { onRecordUpdated?: (
   useEffect(() => {
     fetchTodayData();
     getGPSLocation();
+  }, []);
+
+  // Stable effect to bind stream to the video element
+  useEffect(() => {
+    if (!cameraActive || !stream) return;
+
+    // Use rAF to wait for the Modal to mount the video element in the DOM
+    const rafId = requestAnimationFrame(() => {
+      if (videoRef.current && videoRef.current.srcObject !== stream) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.play().catch((err) => console.log('Video play error:', err));
+      }
+    });
+
+    return () => cancelAnimationFrame(rafId);
+  }, [cameraActive, stream]);
+
+  // Cleanup stream on unmount
+  useEffect(() => {
+    return () => {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((track) => track.stop());
+      }
+    };
   }, []);
 
   const fetchTodayData = async () => {
@@ -120,36 +145,39 @@ export function AttendanceCheckWidget({ onRecordUpdated }: { onRecordUpdated?: (
   };
 
   // Camera Management
+  const stopTracksOnly = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop());
+    }
+    streamRef.current = null;
+    setStream(null);
+    setCameraActive(false);
+  };
+
+  const stopCamera = () => {
+    stopTracksOnly();
+    setCameraModalOpen(false);
+  };
+
   const startCamera = async () => {
     setError(null);
+    setPhotoPreview(null);
+    setPhotoBlob(null);
+    setCameraModalOpen(true);
     try {
       const mediaStream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
         audio: false,
       });
+      streamRef.current = mediaStream;
       setStream(mediaStream);
       setCameraActive(true);
-      setCameraModalOpen(true);
     } catch (err: any) {
-      setError('Unable to access camera. Please allow camera permissions.');
+      console.error('Camera access error:', err);
+      setError('Unable to access live camera. You can upload a verification photo instead.');
+      setCameraActive(false);
     }
   };
-
-  const stopCamera = () => {
-    if (stream) {
-      stream.getTracks().forEach((track) => track.stop());
-      setStream(null);
-    }
-    setCameraActive(false);
-    setCameraModalOpen(false);
-  };
-
-  useEffect(() => {
-    if (cameraActive && stream && videoRef.current) {
-      videoRef.current.srcObject = stream;
-      videoRef.current.play().catch(console.error);
-    }
-  }, [cameraActive, stream]);
 
   const capturePhoto = () => {
     if (!videoRef.current || !canvasRef.current) return;
@@ -172,11 +200,26 @@ export function AttendanceCheckWidget({ onRecordUpdated }: { onRecordUpdated?: (
         0.85
       );
     }
-    stopCamera();
+    stopTracksOnly();
+  };
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setPhotoBlob(file);
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setPhotoPreview(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+      stopTracksOnly();
+    }
   };
 
   const handleOpenCheckInModal = () => {
     setActionType('CHECK_IN');
+    setPhotoPreview(null);
+    setPhotoBlob(null);
     if (settings?.requirePhoto !== false) {
       startCamera();
     } else {
@@ -186,6 +229,8 @@ export function AttendanceCheckWidget({ onRecordUpdated }: { onRecordUpdated?: (
 
   const handleOpenCheckOutModal = () => {
     setActionType('CHECK_OUT');
+    setPhotoPreview(null);
+    setPhotoBlob(null);
     if (settings?.requirePhoto !== false) {
       startCamera();
     } else {
@@ -229,7 +274,7 @@ export function AttendanceCheckWidget({ onRecordUpdated }: { onRecordUpdated?: (
       setPhotoBlob(null);
       setPhotoPreview(null);
       setNote('');
-      setCameraModalOpen(false);
+      stopCamera();
 
       await fetchTodayData();
       onRecordUpdated?.();
@@ -240,25 +285,21 @@ export function AttendanceCheckWidget({ onRecordUpdated }: { onRecordUpdated?: (
     }
   };
 
-  // Distance calculation
-  const distance =
-    location && settings?.officeLat
-      ? calculateDistanceMeters(location.lat, location.lng, settings.officeLat, settings.officeLng)
-      : null;
-  const isWithinGeofence = distance !== null && settings?.geofenceRadius ? distance <= settings.geofenceRadius : true;
+  const distance = settings
+    ? calculateDistanceMeters(location?.lat, location?.lng, settings.officeLat, settings.officeLng)
+    : null;
 
-  // Work Duration Timer
+  const isWithinGeofence = settings && distance !== null ? distance <= settings.geofenceRadius : true;
+
   const getWorkDuration = () => {
     if (!todayRecord?.checkInTime) return null;
     const start = new Date(todayRecord.checkInTime).getTime();
     const end = todayRecord.checkOutTime ? new Date(todayRecord.checkOutTime).getTime() : currentTime.getTime();
     const diffMs = Math.max(0, end - start);
-    const hours = Math.floor(diffMs / (1000 * 60 * 60));
+    const hrs = Math.floor(diffMs / (1000 * 60 * 60));
     const mins = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
     const secs = Math.floor((diffMs % (1000 * 60)) / 1000);
-    return `${hours.toString().padStart(2, '0')}h ${mins.toString().padStart(2, '0')}m ${secs
-      .toString()
-      .padStart(2, '0')}s`;
+    return `${hrs.toString().padStart(2, '0')}h ${mins.toString().padStart(2, '0')}m ${secs.toString().padStart(2, '0')}s`;
   };
 
   const getStatusBadgeVariant = (status: string) => {
@@ -276,93 +317,97 @@ export function AttendanceCheckWidget({ onRecordUpdated }: { onRecordUpdated?: (
 
   return (
     <>
-      <Card className="relative overflow-hidden border-blue-500/20 bg-gradient-to-br from-slate-900 via-slate-900/90 to-blue-950/40">
-        {/* Glow Element */}
-        <div className="absolute -top-24 -right-24 w-72 h-72 bg-blue-500/10 rounded-full blur-3xl pointer-events-none" />
-
-        <CardHeader className="pb-4">
-          <div className="flex flex-wrap items-center justify-between gap-4">
+      <Card className="bg-slate-900 border-slate-800 shadow-xl overflow-hidden">
+        <CardHeader className="border-b border-slate-800/80 bg-slate-950/40 pb-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div className="flex items-center space-x-3">
-              <div className="w-12 h-12 rounded-2xl bg-blue-500/15 border border-blue-500/30 text-blue-400 flex items-center justify-center shrink-0 shadow-lg shadow-blue-500/20">
-                <Clock size={24} className="animate-pulse" />
+              <div className="w-10 h-10 rounded-2xl bg-blue-500/10 text-blue-400 border border-blue-500/20 flex items-center justify-center shrink-0">
+                <Clock size={20} />
               </div>
               <div>
-                <CardTitle className="text-xl flex items-center gap-2">
+                <CardTitle className="text-base font-bold text-white flex items-center gap-2">
                   <span>Attendance Verification</span>
-                  <Badge variant="purple" className="text-[10px]">
+                  <Badge variant="outline" className="text-[10px] text-blue-400 border-blue-500/30">
                     GPS + Photo
                   </Badge>
                 </CardTitle>
-                <CardDescription className="mt-0.5">
-                  {currentTime.toLocaleDateString('en-US', {
-                    weekday: 'long',
-                    month: 'short',
-                    day: 'numeric',
-                    year: 'numeric',
-                  })}
+                <CardDescription className="text-xs text-slate-400 mt-0.5">
+                  {currentTime.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'short', day: 'numeric' })}
                 </CardDescription>
               </div>
             </div>
 
             {/* Live Clock Display */}
-            <div className="bg-slate-950/80 border border-slate-800 rounded-2xl px-4 py-2 font-mono text-center shadow-inner">
-              <div className="text-xl font-extrabold text-white tracking-widest">
-                {currentTime.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+            <div className="flex items-center space-x-3">
+              <div className="px-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 text-right">
+                <div className="font-mono text-sm font-extrabold text-white tracking-widest">
+                  {currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                </div>
+                <div className="text-[9px] uppercase tracking-wider text-slate-500 font-semibold">Live Time</div>
               </div>
-              <div className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">Live Time</div>
             </div>
           </div>
         </CardHeader>
 
-        <CardContent className="space-y-5">
-          {/* Status Feedback Banners */}
+        <CardContent className="pt-6 space-y-6">
+          {/* Notifications */}
           {error && (
-            <div className="p-3.5 rounded-2xl bg-red-500/10 border border-red-500/30 text-red-400 text-xs flex items-center space-x-2">
-              <AlertCircle size={16} className="shrink-0" />
+            <div className="p-3.5 rounded-2xl bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs flex items-center space-x-2">
+              <AlertCircle size={16} className="shrink-0 text-rose-400" />
               <span>{error}</span>
             </div>
           )}
+
           {success && (
-            <div className="p-3.5 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs flex items-center space-x-2">
-              <CheckCircle2 size={16} className="shrink-0" />
+            <div className="p-3.5 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-xs flex items-center space-x-2">
+              <CheckCircle2 size={16} className="shrink-0 text-emerald-400" />
               <span>{success}</span>
             </div>
           )}
 
-          {/* Location Bar */}
-          <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800/80 flex flex-wrap items-center justify-between gap-3 text-xs">
-            <div className="flex items-center space-x-3 text-slate-300">
-              <MapPin size={18} className="text-blue-400 shrink-0" />
+          {/* GPS Verification Banner */}
+          <div className="p-3.5 rounded-2xl bg-slate-950/60 border border-slate-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+            <div className="flex items-center space-x-2.5">
+              <MapPin size={16} className="text-blue-400 shrink-0" />
               <div>
-                <span className="font-semibold text-white">GPS Verification: </span>
+                <span className="text-slate-400 font-medium">GPS Verification: </span>
                 {locLoading ? (
-                  <span className="text-slate-400">Acquiring satellite lock...</span>
+                  <span className="text-amber-400 animate-pulse font-semibold">Fetching location...</span>
+                ) : locError ? (
+                  <span className="text-rose-400 font-semibold">{locError}</span>
                 ) : location ? (
-                  <span className="font-mono text-slate-300">
+                  <span className="text-white font-mono font-semibold">
                     {location.lat.toFixed(4)}°, {location.lng.toFixed(4)}°
                   </span>
                 ) : (
-                  <span className="text-amber-400 font-medium">{locError || 'Location pending'}</span>
+                  <span className="text-slate-500">Location inactive</span>
                 )}
               </div>
             </div>
 
-            <div className="flex items-center space-x-2">
+            <div className="flex items-center space-x-3">
               {distance !== null && (
                 <Badge variant={isWithinGeofence ? 'success' : 'warning'}>
-                  {isWithinGeofence ? `In Office (${distance}m)` : `Off-site (${distance}m remote)`}
+                  {isWithinGeofence ? 'In Office' : 'Out of Geofence'} ({distance}m)
                 </Badge>
               )}
-              <Button size="sm" variant="ghost" onClick={getGPSLocation} title="Refresh GPS Location">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={getGPSLocation}
+                disabled={locLoading}
+                className="h-8 px-2 text-slate-400 hover:text-white"
+                title="Refresh GPS Location"
+              >
                 <RefreshCw size={14} className={locLoading ? 'animate-spin' : ''} />
               </Button>
             </div>
           </div>
 
-          {/* Main Action State Box */}
+          {/* Main Action Content */}
           {loading ? (
-            <div className="p-8 text-center text-slate-400 text-xs flex items-center justify-center space-x-2">
-              <RefreshCw size={18} className="animate-spin text-blue-400" />
+            <div className="py-8 text-center text-slate-400 text-xs flex items-center justify-center space-x-2">
+              <RefreshCw size={16} className="animate-spin text-blue-400" />
               <span>Checking attendance status...</span>
             </div>
           ) : !todayRecord ? (
@@ -372,7 +417,7 @@ export function AttendanceCheckWidget({ onRecordUpdated }: { onRecordUpdated?: (
                 <Zap size={30} />
               </div>
               <div>
-                <h4 className="text-base font-extrabold text-white">Ready for Today's Shift</h4>
+                <h4 className="text-base font-extrabold text-white">Ready for Today&apos;s Shift</h4>
                 <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
                   Click below to record your daily attendance with live GPS location and photo verification.
                 </p>
@@ -446,24 +491,33 @@ export function AttendanceCheckWidget({ onRecordUpdated }: { onRecordUpdated?: (
       {/* Camera & Verification Modal */}
       <Modal
         isOpen={cameraModalOpen}
-        onClose={() => {
-          stopCamera();
-          setCameraModalOpen(false);
-        }}
+        onClose={stopCamera}
         title={`${actionType === 'CHECK_IN' ? 'Check-In' : 'Check-Out'} Verification`}
         maxWidth="max-w-lg"
       >
         <div className="space-y-4 py-2">
-          {/* Camera Viewfinder */}
+          {/* Camera Viewfinder / Photo Preview */}
           <div className="relative aspect-video rounded-2xl bg-slate-950 overflow-hidden border border-slate-800 flex items-center justify-center">
             {cameraActive ? (
-              <video ref={videoRef} className="w-full h-full object-cover" autoPlay playsInline muted />
+              <video
+                ref={videoRef}
+                className="w-full h-full object-cover transform -scale-x-100"
+                autoPlay
+                playsInline
+                muted
+              />
             ) : photoPreview ? (
-              <img src={photoPreview} alt="Captured preview" className="w-full h-full object-cover" />
+              <div className="relative w-full h-full">
+                <img src={photoPreview} alt="Captured preview" className="w-full h-full object-cover" />
+                <div className="absolute top-2 right-2 px-2.5 py-1 rounded-full bg-emerald-500/80 backdrop-blur-md text-white text-[10px] font-bold flex items-center space-x-1">
+                  <CheckCircle2 size={12} />
+                  <span>Photo Ready</span>
+                </div>
+              </div>
             ) : (
-              <div className="text-center text-slate-500 text-xs">
-                <Camera size={36} className="mx-auto mb-2 opacity-40" />
-                <span>Camera feed inactive</span>
+              <div className="text-center text-slate-500 text-xs space-y-2 p-4">
+                <Camera size={36} className="mx-auto opacity-40" />
+                <span>Live camera inactive or access restricted.</span>
               </div>
             )}
             <canvas ref={canvasRef} className="hidden" />
@@ -473,12 +527,42 @@ export function AttendanceCheckWidget({ onRecordUpdated }: { onRecordUpdated?: (
                 variant="default"
                 size="sm"
                 onClick={capturePhoto}
-                className="absolute bottom-3 left-1/2 -translate-x-1/2 bg-blue-600/90 backdrop-blur-md shadow-xl"
+                className="absolute bottom-3 left-1/2 -translate-x-1/2 bg-blue-600/90 hover:bg-blue-500 backdrop-blur-md shadow-xl"
               >
                 <Camera size={14} className="mr-1.5" />
                 <span>Snap Verification Photo</span>
               </Button>
             )}
+          </div>
+
+          {/* Action options: Retake or Upload File */}
+          <div className="flex items-center justify-between text-xs pt-1">
+            {photoPreview ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={startCamera}
+                className="text-xs text-blue-400 border-blue-500/30 hover:bg-blue-500/10"
+              >
+                <Camera size={14} className="mr-1.5" />
+                <span>Retake Photo</span>
+              </Button>
+            ) : !cameraActive ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={startCamera}
+                className="text-xs text-blue-400 border-blue-500/30 hover:bg-blue-500/10"
+              >
+                <Camera size={14} className="mr-1.5" />
+                <span>Start Live Camera</span>
+              </Button>
+            ) : <div />}
+
+            <label className="cursor-pointer inline-flex items-center px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-300 hover:text-white hover:border-slate-700 text-xs transition">
+              <input type="file" accept="image/*" capture="user" onChange={handleFileUpload} className="hidden" />
+              <span>📁 Upload Photo File</span>
+            </label>
           </div>
 
           {/* Verification Meta */}
@@ -515,13 +599,7 @@ export function AttendanceCheckWidget({ onRecordUpdated }: { onRecordUpdated?: (
         </div>
 
         <ModalFooter>
-          <Button
-            variant="outline"
-            onClick={() => {
-              stopCamera();
-              setCameraModalOpen(false);
-            }}
-          >
+          <Button variant="outline" onClick={stopCamera}>
             Cancel
           </Button>
           <Button variant="default" onClick={handleFormSubmit} disabled={submitting}>

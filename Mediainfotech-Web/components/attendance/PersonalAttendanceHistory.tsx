@@ -32,7 +32,7 @@ export function PersonalAttendanceHistory() {
     try {
       setLoading(true);
       const res = await api.get('/api/attendance/my-history');
-      setHistory(res.data.history || []);
+      setHistory(res.data.history || res.data.data || res.data.records || []);
     } catch (e) {
       console.error('Fetch history error:', e);
     } finally {

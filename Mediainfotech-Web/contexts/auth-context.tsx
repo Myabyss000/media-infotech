@@ -105,7 +105,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       MANAGER: ['users:read', 'attendance:read', 'attendance:approve', 'leave:read', 'leave:approve', 'vehicles:read', 'vehicles:update', 'clients:read', 'clients:create', 'clients:update', 'groups:read', 'groups:create', 'groups:update'],
       HR: ['users:read', 'users:create', 'users:update', 'attendance:read', 'attendance:approve', 'leave:read', 'leave:approve', 'leave:update', 'vehicles:read', 'vehicles:create', 'vehicles:update', 'vehicles:delete', 'payslips:read', 'payslips:create', 'payslips:update', 'payslips:delete', 'groups:read', 'groups:create', 'groups:update'],
       ACCOUNTS: ['payslips:read', 'payslips:create', 'payslips:update', 'clients:read', 'groups:read'],
-      EMPLOYEE: ['groups:read'],
+      EMPLOYEE: ['attendance:read', 'groups:read', 'tickets:read', 'tickets:update', 'inventory:read', 'holidays:read'],
     };
 
     const allowed = roleDefaultPermissions[user.role] || [];
