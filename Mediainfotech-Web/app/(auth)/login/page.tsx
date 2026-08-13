@@ -32,7 +32,15 @@ export default function LoginPage() {
       const { accessToken, user } = res.data;
       login(accessToken, user);
     } catch (err: any) {
-      setError(err.response?.data?.error || 'Invalid credentials or server error');
+      if (err.response?.data?.error) {
+        setError(err.response.data.error);
+      } else if (err.response?.status >= 500) {
+        setError('Internal server error during login. Please try again later.');
+      } else if (err.code === 'ERR_NETWORK' || err.message === 'Network Error' || !err.response) {
+        setError('Internal server error: Unable to connect to server');
+      } else {
+        setError('Invalid credentials');
+      }
     } finally {
       setSubmitting(false);
     }

@@ -3,7 +3,7 @@
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 
-export default function HistorySubpageRedirect() {
+export default function ApprovalsSubpageRedirect() {
   const router = useRouter();
 
   useEffect(() => {
