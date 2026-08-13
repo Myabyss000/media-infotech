@@ -142,7 +142,7 @@ async function main() {
       'inventory:read',
       'holidays:read',
     ],
-    [Role.EMPLOYEE]: ['groups:read', 'tickets:read', 'tickets:update', 'inventory:read', 'holidays:read'],
+    [Role.EMPLOYEE]: ['attendance:read', 'groups:read', 'tickets:read', 'tickets:update', 'inventory:read', 'holidays:read'],
   };
 
   console.log('Upserting role permissions...');

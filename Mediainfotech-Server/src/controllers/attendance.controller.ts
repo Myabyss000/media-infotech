@@ -394,7 +394,7 @@ export const getMyAttendanceHistory = async (req: AuthenticatedRequest, res: Res
       take: 30,
     });
 
-    res.json({ data: records });
+    res.json({ data: records, history: records, records: records });
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch attendance history' });
   }
@@ -443,6 +443,8 @@ export const getAllAttendance = async (req: AuthenticatedRequest, res: Response)
               lastName: true,
               email: true,
               designation: true,
+              department: true,
+              avatar: true,
               role: true,
               shiftStartTime: true,
               shiftEndTime: true,
@@ -469,6 +471,7 @@ export const getAllAttendance = async (req: AuthenticatedRequest, res: Response)
 
     res.json({
       data: records,
+      records: records,
       meta: {
         total,
         page: pageNum,
@@ -556,6 +559,18 @@ export const getTodaySummary = async (req: AuthenticatedRequest, res: Response):
         earlyExitToday,
         geofenceFlaggedToday,
       },
+      totalUsers: totalStaff,
+      totalStaff,
+      totalCheckedIn: totalCheckedInToday,
+      totalCheckedInToday,
+      totalLate: lateToday,
+      lateToday,
+      notCheckedInToday,
+      pendingToday,
+      approvedToday,
+      rejectedToday,
+      earlyExitToday,
+      geofenceFlaggedToday,
       attendees: todayRecords,
       notCheckedInUsers,
       settings,

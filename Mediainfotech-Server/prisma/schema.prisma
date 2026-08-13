@@ -68,6 +68,8 @@ model User {
   // Groups
   groupMemberships  GroupMember[]
   createdGroups     Group[]             @relation("groupCreator")
+  announcementsWritten GroupAnnouncement[]        @relation("announcementAuthor")
+  announcementComments GroupAnnouncementComment[] @relation("announcementCommentAuthor")
 
   // Clients
   managedClients    Client[]            @relation("accountManager")
@@ -383,6 +385,7 @@ model Client {
   transactions     ClientTransaction[]
   businessHistory  BusinessHistory[]
   tickets          Ticket[]
+  groups           Group[]
 
   createdAt        DateTime            @default(now())
   updatedAt        DateTime            @updatedAt
@@ -440,19 +443,28 @@ model BusinessHistory {
 // ============================================================================
 
 model Group {
-  id          String        @id @default(cuid())
-  name        String        @unique
-  description String?
-  color       String?
-  createdById String
-  createdBy   User          @relation("groupCreator", fields: [createdById], references: [id])
-  isActive    Boolean       @default(true)
+  id              String        @id @default(cuid())
+  name            String        @unique
+  description     String?
+  color           String?
+  createdById     String
+  createdBy       User          @relation("groupCreator", fields: [createdById], references: [id])
+  isActive        Boolean       @default(true)
 
-  members     GroupMember[]
-  tickets     Ticket[]
+  // Location & Site Service fields
+  locationName    String?
+  locationAddress String?
+  latitude        Float?
+  longitude       Float?
+  clientId        String?
+  client          Client?       @relation(fields: [clientId], references: [id], onDelete: SetNull)
 
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
+  members         GroupMember[]
+  tickets         Ticket[]
+  announcements   GroupAnnouncement[]
+
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
 }
 
 model GroupMember {
@@ -465,6 +477,47 @@ model GroupMember {
   joinedAt DateTime @default(now())
 
   @@unique([groupId, userId])
+}
+
+// ============================================================================
+// GROUP ANNOUNCEMENTS & TASK GUIDELINES
+// ============================================================================
+
+enum GroupAnnouncementPriority {
+  NORMAL
+  IMPORTANT
+  URGENT
+}
+
+model GroupAnnouncement {
+  id          String                    @id @default(cuid())
+  groupId     String
+  group       Group                     @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  authorId    String
+  author      User                      @relation("announcementAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+
+  title       String
+  content     String
+  doList      String?                   // Task Guidelines: What to do
+  dontList    String?                   // Task Guidelines: What NOT to do
+  priority    GroupAnnouncementPriority @default(NORMAL)
+  pinned      Boolean                   @default(false)
+
+  comments    GroupAnnouncementComment[]
+
+  createdAt   DateTime                  @default(now())
+  updatedAt   DateTime                  @updatedAt
+}
+
+model GroupAnnouncementComment {
+  id             String            @id @default(cuid())
+  announcementId String
+  announcement   GroupAnnouncement @relation(fields: [announcementId], references: [id], onDelete: Cascade)
+  authorId       String
+  author         User              @relation("announcementCommentAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+
+  content        String
+  createdAt      DateTime          @default(now())
 }
 
 // ============================================================================
