@@ -4,13 +4,11 @@ import React from 'react';
 import { cn } from '@/lib/utils';
 
 interface ModalProps {
-  open: boolean;
+  open?: boolean;
+  isOpen?: boolean;
   onClose: () => void;
-  /** Title displayed in the modal header. */
   title?: string;
-  /** Icon element rendered before the title. */
   icon?: React.ReactNode;
-  /** Max width class. Defaults to 'max-w-md'. */
   maxWidth?: string;
   children: React.ReactNode;
   className?: string;
@@ -18,6 +16,7 @@ interface ModalProps {
 
 export const Modal: React.FC<ModalProps> = ({
   open,
+  isOpen,
   onClose,
   title,
   icon,
@@ -25,7 +24,8 @@ export const Modal: React.FC<ModalProps> = ({
   children,
   className,
 }) => {
-  if (!open) return null;
+  const isVisible = open !== undefined ? open : Boolean(isOpen);
+  if (!isVisible) return null;
 
   return (
     <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
@@ -57,13 +57,13 @@ export const Modal: React.FC<ModalProps> = ({
 };
 
 interface ModalFooterProps {
-  onClose: () => void;
+  onClose?: () => void;
   submitLabel?: string;
   cancelLabel?: string;
   submitting?: boolean;
   disabled?: boolean;
-  /** Submit button color variant. Defaults to 'blue'. */
   variant?: 'blue' | 'emerald';
+  children?: React.ReactNode;
 }
 
 export const ModalFooter: React.FC<ModalFooterProps> = ({
@@ -73,7 +73,16 @@ export const ModalFooter: React.FC<ModalFooterProps> = ({
   submitting = false,
   disabled = false,
   variant = 'blue',
+  children,
 }) => {
+  if (children) {
+    return (
+      <div className="flex items-center justify-end space-x-3 pt-4 border-t border-slate-800">
+        {children}
+      </div>
+    );
+  }
+
   const submitColors =
     variant === 'emerald'
       ? 'bg-emerald-600 hover:bg-emerald-500'
@@ -81,13 +90,15 @@ export const ModalFooter: React.FC<ModalFooterProps> = ({
 
   return (
     <div className="flex items-center justify-end space-x-3 pt-4 border-t border-slate-800">
-      <button
-        type="button"
-        onClick={onClose}
-        className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 text-xs font-semibold"
-      >
-        {cancelLabel}
-      </button>
+      {onClose && (
+        <button
+          type="button"
+          onClick={onClose}
+          className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 text-xs font-semibold"
+        >
+          {cancelLabel}
+        </button>
+      )}
       <button
         type="submit"
         disabled={submitting || disabled}

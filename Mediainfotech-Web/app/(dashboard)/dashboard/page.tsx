@@ -19,6 +19,8 @@ import {
   PlusCircle,
 } from 'lucide-react';
 
+import { AttendanceCheckWidget } from '@/components/attendance/AttendanceCheckWidget';
+
 export default function DashboardPage() {
   const { user, hasPermission } = useAuth();
   const companyName = process.env.NEXT_PUBLIC_COMPANY_NAME || 'Media Infotech';
@@ -50,11 +52,14 @@ export default function DashboardPage() {
               className="px-5 py-3 rounded-2xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-semibold text-xs shadow-lg shadow-blue-500/25 transition flex items-center space-x-2"
             >
               <Clock size={16} />
-              <span>Verify Attendance</span>
+              <span>Full Attendance Workspace</span>
             </Link>
           </div>
         </div>
       </div>
+
+      {/* Primary Dashboard Check-In/Out Widget */}
+      <AttendanceCheckWidget />
 
       {/* Operational Metrics Overview Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">

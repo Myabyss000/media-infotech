@@ -52,13 +52,6 @@ export const Sidebar: React.FC<{ collapsed: boolean; setCollapsed: (c: boolean) 
       title: 'Attendance',
       href: '/attendance',
       icon: Clock,
-      subItems: [
-        { title: 'Check In/Out', href: '/attendance' },
-        { title: 'My History', href: '/attendance/history' },
-        ...(hasPermission('attendance', 'read')
-          ? [{ title: 'All Records', href: '/attendance/all' }]
-          : []),
-      ],
     },
     {
       title: 'HR Centre',

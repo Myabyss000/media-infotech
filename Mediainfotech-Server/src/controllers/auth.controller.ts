@@ -23,7 +23,7 @@ export const login = async (req: Request, res: Response): Promise<void> => {
     });
 
     if (!user) {
-      res.status(401).json({ error: 'Invalid username or password' });
+      res.status(401).json({ error: 'Invalid credentials' });
       return;
     }
 
@@ -34,7 +34,7 @@ export const login = async (req: Request, res: Response): Promise<void> => {
 
     const isMatch = await comparePassword(password, user.password);
     if (!isMatch) {
-      res.status(401).json({ error: 'Invalid username or password' });
+      res.status(401).json({ error: 'Invalid credentials' });
       return;
     }
 
