@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+**/node_modules/
+.pnp
+.pnp.*
+
+# Build outputs & caches
+dist/
+**/dist/
+.next/
+**/.next/
+out/
+**/out/
+build/
+**/build/
+*.tsbuildinfo
+**/*.tsbuildinfo
+.eslintcache
+
+# Environment variables & secrets
+.env
+.env.*
+!.env.example
+*.pem
+
+# Uploads & User Generated Content
+uploads/
+**/uploads/*
+!**/uploads/.gitkeep
+
+# Debug logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# System & IDE files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

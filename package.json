@@ -1,0 +1,19 @@
+{
+  "name": "mediainfotech-portal",
+  "version": "1.0.0",
+  "description": "Media Infotech Corporate Management System - Enterprise Fullstack Portal",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:web\"",
+    "dev:server": "npm --prefix Mediainfotech-Server run dev",
+    "dev:web": "npm --prefix Mediainfotech-Web run dev",
+    "build": "npm --prefix Mediainfotech-Server run build && npm --prefix Mediainfotech-Web run build",
+    "build:server": "npm --prefix Mediainfotech-Server run build",
+    "build:web": "npm --prefix Mediainfotech-Web run build",
+    "check-types": "npm --prefix Mediainfotech-Server exec tsc --noEmit && npm --prefix Mediainfotech-Web exec tsc --noEmit",
+    "lint": "npm --prefix Mediainfotech-Web run lint"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
