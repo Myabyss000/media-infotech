@@ -4,7 +4,7 @@ import fs from 'fs';
 
 // Ensure upload directories exist
 const uploadBaseDir = path.join(__dirname, '../../uploads');
-const dirs = ['avatars', 'attendance-photos', 'payslips', 'documents'];
+const dirs = ['avatars', 'attendance-photos', 'payslips', 'documents', 'ticket-photos'];
 
 dirs.forEach((dir) => {
   const fullPath = path.join(uploadBaseDir, dir);
@@ -16,7 +16,9 @@ dirs.forEach((dir) => {
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     let folder = 'documents';
-    if (file.fieldname === 'photo' || file.fieldname === 'checkInPhoto' || file.fieldname === 'checkOutPhoto') {
+    if (file.fieldname === 'ticketPhoto' || (file.fieldname === 'photo' && req.baseUrl.includes('tickets'))) {
+      folder = 'ticket-photos';
+    } else if (file.fieldname === 'photo' || file.fieldname === 'checkInPhoto' || file.fieldname === 'checkOutPhoto') {
       folder = 'attendance-photos';
     } else if (file.fieldname === 'avatar') {
       folder = 'avatars';
@@ -34,5 +36,6 @@ const storage = multer.diskStorage({
 
 export const upload = multer({
   storage,
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB limit to support High-Resolution and RAW photos
 });
+

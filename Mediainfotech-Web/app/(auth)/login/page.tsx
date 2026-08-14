@@ -50,8 +50,8 @@ export default function LoginPage() {
     <div className="bg-slate-900/90 border border-slate-800 backdrop-blur-xl rounded-3xl p-8 shadow-2xl shadow-blue-950/40">
       {/* Company Branding */}
       <div className="text-center mb-8">
-        <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-500 text-white font-bold text-2xl shadow-xl shadow-blue-500/25 mb-4">
-          {companyName.charAt(0)}
+        <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-slate-950 border border-slate-800 p-2.5 shadow-xl shadow-blue-500/10 mb-4">
+          <img src="/Icon.png" alt={companyName} className="w-full h-full object-contain" />
         </div>
         <h1 className="text-2xl font-extrabold tracking-tight text-white">{companyName}</h1>
         <p className="text-xs text-slate-400 font-medium mt-1">{companyTagline}</p>

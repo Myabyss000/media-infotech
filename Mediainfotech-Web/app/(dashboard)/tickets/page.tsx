@@ -1,31 +1,55 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { api } from '@/lib/api';
 import { useAuth } from '@/contexts/auth-context';
 import {
   Ticket as TicketIcon,
   Plus,
   Search,
-  Filter,
-  UsersRound,
-  UserCheck,
-  Car,
   CheckCircle2,
   Package,
   Barcode,
-  Calendar,
+  Clock,
+  MessageSquare,
+  Send,
+  Trash2,
+  Building2,
+  LayoutGrid,
+  List as ListIcon,
+  Check,
+  Camera,
+  Download,
+  Maximize2,
+  FileImage,
+  X,
+  User,
+  RotateCcw,
+  ShieldCheck,
+  MapPin,
+  ExternalLink,
+  Loader2,
+  Lock,
+  ArrowRight,
+  Filter,
 } from 'lucide-react';
 import { formatDateTime } from '@/lib/utils';
-import { PageHeader } from '@/components/ui/PageHeader';
 import { Modal, ModalFooter } from '@/components/ui/Modal';
-import { StatusBadge } from '@/components/ui/StatusBadge';
 import { FormField, inputClassName, textareaClassName } from '@/components/ui/FormField';
 
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
+
 export default function TicketsPage() {
-  const { hasPermission } = useAuth();
+  const { user, hasPermission, hasRole } = useAuth();
+  const canManageTickets = hasRole('ADMIN', 'MANAGER', 'HR') || hasPermission('tickets', 'create');
+  const isManagerOrAdmin = hasRole('ADMIN', 'MANAGER', 'HR');
+  const isAdmin = hasRole('ADMIN') || user?.role === 'ADMIN';
+
   const [tickets, setTickets] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  // Default to List view (Option 1)
+  const [viewMode, setViewMode] = useState<'list' | 'kanban'>('list');
+
   const [statusCounts, setStatusCounts] = useState({
     OPEN: 0,
     IN_PROGRESS: 0,
@@ -38,39 +62,65 @@ export default function TicketsPage() {
   const [clients, setClients] = useState<any[]>([]);
   const [vehicles, setVehicles] = useState<any[]>([]);
   const [inventoryList, setInventoryList] = useState<any[]>([]);
+  const [usersList, setUsersList] = useState<any[]>([]);
 
   // Filter State
   const [filterStatus, setFilterStatus] = useState<string>('ALL');
   const [filterPriority, setFilterPriority] = useState<string>('ALL');
   const [filterGroup, setFilterGroup] = useState<string>('ALL');
+  const [filterTechnician, setFilterTechnician] = useState<string>('ALL');
   const [timeRange, setTimeRange] = useState<string>('ALL_TIME');
   const [startDate, setStartDate] = useState<string>('');
   const [endDate, setEndDate] = useState<string>('');
   const [search, setSearch] = useState('');
 
-  // Modal State
+  // Modals & Drawers
   const [modalOpen, setModalOpen] = useState(false);
   const [resolveModalOpen, setResolveModalOpen] = useState(false);
   const [ticketToResolve, setTicketToResolve] = useState<any | null>(null);
+  const [activeTicketDrawer, setActiveTicketDrawer] = useState<any | null>(null);
 
   // Form State for Ticket Creation
   const [form, setForm] = useState({
     title: '',
     description: '',
     priority: 'MEDIUM',
+    dueDate: '',
     assignedGroupId: '',
+    assignedUserId: '',
     clientId: '',
     vehicleId: '',
     inventoryItemIds: [] as string[],
   });
 
-  // Form State for Ticket Resolution / Solution
+  // Form State for Ticket Resolution with Proof Photo & GPS Log
   const [resolveForm, setResolveForm] = useState({
     resolutionNote: '',
     inventoryItemIds: [] as string[],
   });
+  const [resolvePhotoFile, setResolvePhotoFile] = useState<File | null>(null);
+  const [resolvePhotoPreview, setResolvePhotoPreview] = useState<string | null>(null);
+  const resolvePhotoInputRef = useRef<HTMLInputElement>(null);
 
+  // Geolocation Audit State for Resolution (captured in background)
+  const [gpsLocation, setGpsLocation] = useState<{
+    lat: number;
+    lng: number;
+    accuracy: number;
+    address?: string;
+  } | null>(null);
+  const [fetchingGps, setFetchingGps] = useState(false);
+  const [gpsCaptured, setGpsCaptured] = useState(false);
+
+  // Comment & Discussion Photo Upload State
+  const [commentText, setCommentText] = useState('');
+  const [selectedPhotoFile, setSelectedPhotoFile] = useState<File | null>(null);
+  const [photoPreviewUrl, setPhotoPreviewUrl] = useState<string | null>(null);
+  const photoInputRef = useRef<HTMLInputElement>(null);
+  const [previewModalPhoto, setPreviewModalPhoto] = useState<string | null>(null);
+  const [submittingComment, setSubmittingComment] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [resolving, setResolving] = useState(false);
 
   useEffect(() => {
     fetchAuxiliaryData();
@@ -78,22 +128,24 @@ export default function TicketsPage() {
 
   useEffect(() => {
     fetchTickets();
-  }, [filterStatus, filterPriority, filterGroup, timeRange, startDate, endDate, search]);
+  }, [filterStatus, filterPriority, filterGroup, filterTechnician, timeRange, startDate, endDate, search]);
 
   const fetchAuxiliaryData = async () => {
     try {
-      const [gRes, cRes, vRes, iRes] = await Promise.all([
+      const [gRes, cRes, vRes, iRes, uRes] = await Promise.all([
         api.get('/api/groups').catch(() => ({ data: [] })),
-        api.get('/api/clients?limit=100').catch(() => ({ data: [] })),
+        api.get('/api/clients?limit=100').catch(() => ({ data: { data: [] } })),
         api.get('/api/vehicles').catch(() => ({ data: [] })),
-        api.get('/api/inventory?limit=100').catch(() => ({ data: [] })),
+        api.get('/api/inventory?limit=100').catch(() => ({ data: { data: [] } })),
+        api.get('/api/users?limit=100').catch(() => ({ data: { data: [] } })),
       ]);
       setGroups(gRes.data || []);
       setClients(cRes.data?.data || cRes.data || []);
       setVehicles(vRes.data || []);
       setInventoryList(iRes.data?.data || iRes.data || []);
+      setUsersList(uRes.data?.data || uRes.data || []);
     } catch (e) {
-      console.error('Failed to load options', e);
+      console.error('Failed to load auxiliary options', e);
     }
   };
 
@@ -104,6 +156,7 @@ export default function TicketsPage() {
       if (filterStatus !== 'ALL') query += `&status=${filterStatus}`;
       if (filterPriority !== 'ALL') query += `&priority=${filterPriority}`;
       if (filterGroup !== 'ALL') query += `&assignedGroupId=${filterGroup}`;
+      if (filterTechnician !== 'ALL') query += `&assignedUserId=${filterTechnician}`;
 
       if (timeRange !== 'ALL_TIME' && timeRange !== 'CUSTOM') {
         query += `&timeRange=${timeRange}`;
@@ -112,15 +165,76 @@ export default function TicketsPage() {
       }
 
       const res = await api.get(query);
-      setTickets(res.data.data || []);
+      const ticketData = res.data.data || [];
+      setTickets(ticketData);
       if (res.data.statusCounts) {
         setStatusCounts(res.data.statusCounts);
       }
+
+      if (activeTicketDrawer) {
+        const updated = ticketData.find((t: any) => t.id === activeTicketDrawer.id);
+        if (updated) setActiveTicketDrawer(updated);
+      }
     } catch (e) {
-      console.error(e);
+      console.error('Fetch tickets error:', e);
     } finally {
       setLoading(false);
     }
+  };
+
+  // Acquire technician GPS coordinates silently for admin/manager audit
+  const captureResolutionGps = () => {
+    if (!navigator.geolocation) {
+      setFetchingGps(false);
+      return;
+    }
+
+    setFetchingGps(true);
+
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        const lat = pos.coords.latitude;
+        const lng = pos.coords.longitude;
+        const accuracy = Math.round(pos.coords.accuracy);
+
+        let address = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+        try {
+          const res = await fetch(
+            `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1`
+          );
+          if (res.ok) {
+            const data = await res.json();
+            if (data.display_name) {
+              address = data.display_name;
+            }
+          }
+        } catch {
+          // fallback
+        }
+
+        setGpsLocation({ lat, lng, accuracy, address });
+        setGpsCaptured(true);
+        setFetchingGps(false);
+      },
+      () => {
+        setFetchingGps(false);
+        setGpsCaptured(false);
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+    );
+  };
+
+  const handleOpenResolveModal = (t: any) => {
+    setTicketToResolve(t);
+    setResolveForm({
+      resolutionNote: t.resolutionNote || '',
+      inventoryItemIds: [],
+    });
+    handleClearResolvePhoto();
+    setGpsLocation(null);
+    setGpsCaptured(false);
+    setResolveModalOpen(true);
+    captureResolutionGps();
   };
 
   const handleCreateTicket = async (e: React.FormEvent) => {
@@ -133,7 +247,9 @@ export default function TicketsPage() {
         title: '',
         description: '',
         priority: 'MEDIUM',
+        dueDate: '',
         assignedGroupId: '',
+        assignedUserId: '',
         clientId: '',
         vehicleId: '',
         inventoryItemIds: [],
@@ -146,422 +262,674 @@ export default function TicketsPage() {
     }
   };
 
-  const handleUpdateStatus = async (id: string, status: string, resolutionNote?: string, inventoryItemIds?: string[]) => {
+  // Status updater with role-based restrictions
+  const handleUpdateStatus = async (
+    id: string,
+    status: string,
+    resolutionNote?: string,
+    proofPhotoFile?: File | null,
+    locationData?: { lat: number; lng: number; accuracy: number; address?: string } | null,
+    inventoryItemIds?: string[]
+  ) => {
     try {
-      await api.put(`/api/tickets/${id}/status`, { status, resolutionNote, inventoryItemIds });
-      fetchTickets();
+      if (proofPhotoFile || locationData) {
+        const formData = new FormData();
+        formData.append('status', status);
+        if (resolutionNote) formData.append('resolutionNote', resolutionNote);
+        if (proofPhotoFile) formData.append('proofPhoto', proofPhotoFile);
+        if (locationData) {
+          formData.append('resolveLat', locationData.lat.toString());
+          formData.append('resolveLng', locationData.lng.toString());
+          formData.append('resolveAccuracy', locationData.accuracy.toString());
+          if (locationData.address) formData.append('resolveAddress', locationData.address);
+        }
+        if (inventoryItemIds && inventoryItemIds.length > 0) {
+          formData.append('inventoryItemIds', JSON.stringify(inventoryItemIds));
+        }
+
+        await api.put(`/api/tickets/${id}/status`, formData, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+        });
+      } else {
+        await api.put(`/api/tickets/${id}/status`, {
+          status,
+          resolutionNote,
+          inventoryItemIds,
+        });
+      }
+
+      await fetchTickets();
+      if (activeTicketDrawer && activeTicketDrawer.id === id) {
+        const fresh = await api.get(`/api/tickets/${id}`);
+        setActiveTicketDrawer(fresh.data);
+      }
     } catch (err: any) {
       alert(err.response?.data?.error || 'Failed to update ticket status');
+    }
+  };
+
+  const handleResolvePhotoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > 50 * 1024 * 1024) {
+      alert('Photo size exceeds 50MB limit.');
+      return;
+    }
+
+    setResolvePhotoFile(file);
+    if (file.type.startsWith('image/')) {
+      setResolvePhotoPreview(URL.createObjectURL(file));
+    } else {
+      setResolvePhotoPreview(null);
+    }
+  };
+
+  const handleClearResolvePhoto = () => {
+    setResolvePhotoFile(null);
+    if (resolvePhotoPreview) {
+      URL.revokeObjectURL(resolvePhotoPreview);
+      setResolvePhotoPreview(null);
+    }
+    if (resolvePhotoInputRef.current) {
+      resolvePhotoInputRef.current.value = '';
     }
   };
 
   const handleResolveSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!ticketToResolve) return;
+    if (!resolveForm.resolutionNote.trim()) {
+      alert('Please enter resolution summary & notes.');
+      return;
+    }
+
+    setResolving(true);
     try {
       await handleUpdateStatus(
         ticketToResolve.id,
         'RESOLVED',
-        resolveForm.resolutionNote,
+        resolveForm.resolutionNote.trim(),
+        resolvePhotoFile,
+        gpsLocation,
         resolveForm.inventoryItemIds
       );
       setResolveModalOpen(false);
       setTicketToResolve(null);
       setResolveForm({ resolutionNote: '', inventoryItemIds: [] });
+      handleClearResolvePhoto();
+      setGpsLocation(null);
+      setGpsCaptured(false);
     } catch (e) {
       console.error(e);
+    } finally {
+      setResolving(false);
     }
   };
 
-  const totalTickets = statusCounts.OPEN + statusCounts.IN_PROGRESS + statusCounts.RESOLVED + statusCounts.CLOSED;
-  const progressPercent =
-    totalTickets > 0
-      ? Math.round(((statusCounts.RESOLVED + statusCounts.CLOSED) / totalTickets) * 100)
-      : 0;
+  // Admin-only ticket deletion handler
+  const handleDeleteTicket = async (ticketId: string) => {
+    if (!isAdmin) {
+      alert('Permission denied: Only System Admins can delete tickets.');
+      return;
+    }
+
+    if (!confirm('Are you sure you want to permanently delete this support ticket? This action cannot be undone.')) {
+      return;
+    }
+
+    try {
+      await api.delete(`/api/tickets/${ticketId}`);
+      if (activeTicketDrawer && activeTicketDrawer.id === ticketId) {
+        setActiveTicketDrawer(null);
+      }
+      fetchTickets();
+    } catch (err: any) {
+      alert(err.response?.data?.error || 'Failed to delete ticket');
+    }
+  };
+
+  const handlePhotoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > 50 * 1024 * 1024) {
+      alert('File size exceeds 50MB limit.');
+      return;
+    }
+
+    setSelectedPhotoFile(file);
+    if (file.type.startsWith('image/')) {
+      setPhotoPreviewUrl(URL.createObjectURL(file));
+    } else {
+      setPhotoPreviewUrl(null);
+    }
+  };
+
+  const handleClearPhoto = () => {
+    setSelectedPhotoFile(null);
+    if (photoPreviewUrl) {
+      URL.revokeObjectURL(photoPreviewUrl);
+      setPhotoPreviewUrl(null);
+    }
+    if (photoInputRef.current) {
+      photoInputRef.current.value = '';
+    }
+  };
+
+  const handleAddComment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activeTicketDrawer || (!commentText.trim() && !selectedPhotoFile)) return;
+    setSubmittingComment(true);
+    try {
+      const formData = new FormData();
+      if (commentText.trim()) {
+        formData.append('content', commentText.trim());
+      }
+      if (selectedPhotoFile) {
+        formData.append('photo', selectedPhotoFile);
+      }
+
+      await api.post(`/api/tickets/${activeTicketDrawer.id}/comments`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+
+      setCommentText('');
+      handleClearPhoto();
+
+      const fresh = await api.get(`/api/tickets/${activeTicketDrawer.id}`);
+      setActiveTicketDrawer(fresh.data);
+      fetchTickets();
+    } catch (err: any) {
+      alert(err.response?.data?.error || 'Failed to post comment');
+    } finally {
+      setSubmittingComment(false);
+    }
+  };
+
+  const handleDeleteComment = async (commentId: string) => {
+    if (!activeTicketDrawer || !confirm('Delete this comment?')) return;
+    try {
+      await api.delete(`/api/tickets/${activeTicketDrawer.id}/comments/${commentId}`);
+      const fresh = await api.get(`/api/tickets/${activeTicketDrawer.id}`);
+      setActiveTicketDrawer(fresh.data);
+      fetchTickets();
+    } catch (err: any) {
+      alert(err.response?.data?.error || 'Failed to delete comment');
+    }
+  };
+
+  const toggleInventorySelection = (itemId: string) => {
+    setForm((prev) => ({
+      ...prev,
+      inventoryItemIds: prev.inventoryItemIds.includes(itemId)
+        ? prev.inventoryItemIds.filter((id) => id !== itemId)
+        : [...prev.inventoryItemIds, itemId],
+    }));
+  };
+
+  const getPriorityStyle = (priority: string) => {
+    switch (priority) {
+      case 'URGENT':
+        return { bg: 'bg-rose-500/20 text-rose-400 border border-rose-500/30', dot: 'bg-rose-500' };
+      case 'HIGH':
+        return { bg: 'bg-orange-500/20 text-orange-400 border border-orange-500/30', dot: 'bg-orange-500' };
+      case 'MEDIUM':
+        return { bg: 'bg-blue-500/20 text-blue-400 border border-blue-500/30', dot: 'bg-blue-500' };
+      default:
+        return { bg: 'bg-slate-800 text-slate-400 border border-slate-700', dot: 'bg-slate-500' };
+    }
+  };
+
+  const getStatusStyle = (status: string) => {
+    switch (status) {
+      case 'OPEN':
+        return { badge: 'bg-amber-500/20 text-amber-400 border border-amber-500/30', label: 'Open' };
+      case 'IN_PROGRESS':
+        return { badge: 'bg-blue-500/20 text-blue-400 border border-blue-500/30', label: 'In Progress' };
+      case 'RESOLVED':
+        return { badge: 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30', label: 'Resolved' };
+      case 'CLOSED':
+        return { badge: 'bg-slate-800 text-slate-400 border border-slate-700', label: 'Closed' };
+      default:
+        return { badge: 'bg-slate-800 text-slate-400 border border-slate-700', label: status };
+    }
+  };
+
+  const KANBAN_COLUMNS = [
+    { key: 'OPEN', title: 'Open', color: 'text-amber-400', dot: 'bg-amber-400' },
+    { key: 'IN_PROGRESS', title: 'In Progress', color: 'text-blue-400', dot: 'bg-blue-400' },
+    { key: 'RESOLVED', title: 'Resolved', color: 'text-emerald-400', dot: 'bg-emerald-400' },
+    { key: 'CLOSED', title: 'Closed', color: 'text-slate-400', dot: 'bg-slate-500' },
+  ];
+
+  const totalTicketsCount =
+    statusCounts.OPEN + statusCounts.IN_PROGRESS + statusCounts.RESOLVED + statusCounts.CLOSED;
+
+  const STATUS_TABS = [
+    { key: 'ALL', label: 'All Tickets', count: totalTicketsCount, activeStyle: 'bg-blue-600 text-white shadow-md' },
+    { key: 'OPEN', label: 'Open', count: statusCounts.OPEN, dot: 'bg-amber-400', activeStyle: 'bg-amber-500/20 text-amber-300 border-amber-500/50' },
+    { key: 'IN_PROGRESS', label: 'In Progress', count: statusCounts.IN_PROGRESS, dot: 'bg-blue-400', activeStyle: 'bg-blue-500/20 text-blue-300 border-blue-500/50' },
+    { key: 'RESOLVED', label: 'Resolved', count: statusCounts.RESOLVED, dot: 'bg-emerald-400', activeStyle: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50' },
+    { key: 'CLOSED', label: 'Archived', count: statusCounts.CLOSED, dot: 'bg-slate-400', activeStyle: 'bg-slate-800 text-slate-200 border-slate-600' },
+  ];
+
+  const hasActiveFilters =
+    filterStatus !== 'ALL' ||
+    filterPriority !== 'ALL' ||
+    filterGroup !== 'ALL' ||
+    filterTechnician !== 'ALL' ||
+    timeRange !== 'ALL_TIME' ||
+    search.trim() !== '';
+
+  const resetAllFilters = () => {
+    setFilterStatus('ALL');
+    setFilterPriority('ALL');
+    setFilterGroup('ALL');
+    setFilterTechnician('ALL');
+    setTimeRange('ALL_TIME');
+    setStartDate('');
+    setEndDate('');
+    setSearch('');
+  };
 
   return (
-    <div className="space-y-6">
-      <PageHeader
-        title="Support Ticket System"
-        subtitle="Raised by support managers to assign tasks to teams with linked client, vehicle, and inventory devices."
-        icon={<TicketIcon className="text-blue-400" size={28} />}
-        action={
-          hasPermission('tickets', 'create') ? (
-            <button
-              onClick={() => setModalOpen(true)}
-              className="px-5 py-2.5 rounded-2xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-semibold text-xs flex items-center space-x-2 transition shadow-lg shadow-blue-500/25"
-            >
-              <Plus size={16} />
-              <span>Raise New Ticket</span>
-            </button>
-          ) : undefined
-        }
-      />
-
-      {/* Ticket Status Bar & Progress Summary */}
-      <div className="p-6 rounded-3xl bg-slate-900 border border-slate-800 space-y-5">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
-            Overall Ticket Resolution Status
-          </h2>
-          <div className="flex items-center space-x-2 text-xs text-slate-300 font-mono">
-            <span className="text-blue-400 font-bold">{progressPercent}%</span>
-            <span>Completed ({statusCounts.RESOLVED + statusCounts.CLOSED} / {totalTickets})</span>
-          </div>
+    <div className="space-y-6 pb-12">
+      {/* Top Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-extrabold text-white tracking-tight">Support & Field Tickets</h1>
+          <p className="text-xs text-slate-400 mt-1">
+            Track client issues, field dispatch, SLA deadlines, equipment, and verified resolutions.
+          </p>
         </div>
 
-        {/* Status Bar Indicator */}
-        <div className="h-3.5 w-full bg-slate-950 rounded-full overflow-hidden flex p-0.5 border border-slate-800">
-          <div
-            style={{ width: `${totalTickets ? (statusCounts.OPEN / totalTickets) * 100 : 0}%` }}
-            className="bg-amber-500 transition-all duration-500"
-            title={`Open: ${statusCounts.OPEN}`}
-          />
-          <div
-            style={{ width: `${totalTickets ? (statusCounts.IN_PROGRESS / totalTickets) * 100 : 0}%` }}
-            className="bg-blue-500 transition-all duration-500"
-            title={`In Progress: ${statusCounts.IN_PROGRESS}`}
-          />
-          <div
-            style={{ width: `${totalTickets ? (statusCounts.RESOLVED / totalTickets) * 100 : 0}%` }}
-            className="bg-emerald-500 transition-all duration-500"
-            title={`Resolved: ${statusCounts.RESOLVED}`}
-          />
-          <div
-            style={{ width: `${totalTickets ? (statusCounts.CLOSED / totalTickets) * 100 : 0}%` }}
-            className="bg-slate-600 transition-all duration-500"
-            title={`Closed: ${statusCounts.CLOSED}`}
-          />
-        </div>
-
-        {/* Counter Badges */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <div
-            onClick={() => setFilterStatus(filterStatus === 'OPEN' ? 'ALL' : 'OPEN')}
-            className={`p-3 rounded-2xl border transition cursor-pointer ${
-              filterStatus === 'OPEN'
-                ? 'bg-amber-500/20 border-amber-500/50 text-amber-400'
-                : 'bg-slate-950/60 border-slate-800 text-slate-300 hover:bg-slate-800/40'
-            }`}
+        {canManageTickets && (
+          <button
+            onClick={() => setModalOpen(true)}
+            className="px-4 py-2.5 rounded-2xl bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs flex items-center space-x-2 transition shadow-lg shadow-blue-500/20 shrink-0"
           >
-            <p className="text-[10px] uppercase font-bold text-slate-400">Open Tickets</p>
-            <p className="text-xl font-extrabold font-mono text-amber-400 mt-1">{statusCounts.OPEN}</p>
-          </div>
-
-          <div
-            onClick={() => setFilterStatus(filterStatus === 'IN_PROGRESS' ? 'ALL' : 'IN_PROGRESS')}
-            className={`p-3 rounded-2xl border transition cursor-pointer ${
-              filterStatus === 'IN_PROGRESS'
-                ? 'bg-blue-500/20 border-blue-500/50 text-blue-400'
-                : 'bg-slate-950/60 border-slate-800 text-slate-300 hover:bg-slate-800/40'
-            }`}
-          >
-            <p className="text-[10px] uppercase font-bold text-slate-400">In Progress</p>
-            <p className="text-xl font-extrabold font-mono text-blue-400 mt-1">{statusCounts.IN_PROGRESS}</p>
-          </div>
-
-          <div
-            onClick={() => setFilterStatus(filterStatus === 'RESOLVED' ? 'ALL' : 'RESOLVED')}
-            className={`p-3 rounded-2xl border transition cursor-pointer ${
-              filterStatus === 'RESOLVED'
-                ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-400'
-                : 'bg-slate-950/60 border-slate-800 text-slate-300 hover:bg-slate-800/40'
-            }`}
-          >
-            <p className="text-[10px] uppercase font-bold text-slate-400">Resolved</p>
-            <p className="text-xl font-extrabold font-mono text-emerald-400 mt-1">{statusCounts.RESOLVED}</p>
-          </div>
-
-          <div
-            onClick={() => setFilterStatus(filterStatus === 'CLOSED' ? 'ALL' : 'CLOSED')}
-            className={`p-3 rounded-2xl border transition cursor-pointer ${
-              filterStatus === 'CLOSED'
-                ? 'bg-slate-700/40 border-slate-600 text-slate-300'
-                : 'bg-slate-950/60 border-slate-800 text-slate-300 hover:bg-slate-800/40'
-            }`}
-          >
-            <p className="text-[10px] uppercase font-bold text-slate-400">Closed</p>
-            <p className="text-xl font-extrabold font-mono text-slate-400 mt-1">{statusCounts.CLOSED}</p>
-          </div>
-        </div>
-      </div>
-
-      {/* Filter & Search Bar */}
-      <div className="space-y-3 bg-slate-900 p-4 rounded-2xl border border-slate-800">
-        <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-4">
-          <div className="relative flex-1 min-w-[200px]">
-            <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search ticket #, title, description..."
-              className="w-full pl-10 pr-4 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 transition"
-            />
-          </div>
-
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="flex items-center space-x-2 text-xs text-slate-400">
-              <Filter size={14} />
-              <span>Filters:</span>
-            </div>
-
-            {/* Time Filter Select */}
-            <div className="flex items-center space-x-1">
-              <select
-                value={timeRange}
-                onChange={(e) => setTimeRange(e.target.value)}
-                className="py-2 px-3 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white"
-              >
-                <option value="ALL_TIME">All Time</option>
-                <option value="TODAY">Created Today</option>
-                <option value="THIS_WEEK">Created This Week</option>
-                <option value="THIS_MONTH">Created This Month</option>
-                <option value="CUSTOM">Custom Date Range</option>
-              </select>
-            </div>
-
-            <select
-              value={filterPriority}
-              onChange={(e) => setFilterPriority(e.target.value)}
-              className="py-2 px-3 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white"
-            >
-              <option value="ALL">All Priorities</option>
-              <option value="URGENT">Urgent</option>
-              <option value="HIGH">High</option>
-              <option value="MEDIUM">Medium</option>
-              <option value="LOW">Low</option>
-            </select>
-
-            <select
-              value={filterGroup}
-              onChange={(e) => setFilterGroup(e.target.value)}
-              className="py-2 px-3 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white"
-            >
-              <option value="ALL">All Assigned Groups</option>
-              {groups.map((g) => (
-                <option key={g.id} value={g.id}>
-                  {g.name}
-                </option>
-              ))}
-            </select>
-
-            {(filterStatus !== 'ALL' || filterPriority !== 'ALL' || filterGroup !== 'ALL' || timeRange !== 'ALL_TIME' || search) && (
-              <button
-                onClick={() => {
-                  setFilterStatus('ALL');
-                  setFilterPriority('ALL');
-                  setFilterGroup('ALL');
-                  setTimeRange('ALL_TIME');
-                  setStartDate('');
-                  setEndDate('');
-                  setSearch('');
-                }}
-                className="text-xs text-red-400 hover:text-red-300 font-semibold px-2 py-1"
-              >
-                Reset Filters
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* Custom Date Range Pickers (Revealed when CUSTOM is selected) */}
-        {timeRange === 'CUSTOM' && (
-          <div className="flex flex-wrap items-center space-x-3 pt-3 border-t border-slate-800 text-xs">
-            <span className="text-slate-400 flex items-center space-x-1 font-semibold">
-              <Calendar size={14} className="text-blue-400" />
-              <span>Select Custom Range:</span>
-            </span>
-
-            <div className="flex items-center space-x-2">
-              <label className="text-[10px] text-slate-500 font-bold uppercase">From:</label>
-              <input
-                type="date"
-                value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
-                className="py-1.5 px-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white"
-              />
-            </div>
-
-            <div className="flex items-center space-x-2">
-              <label className="text-[10px] text-slate-500 font-bold uppercase">To:</label>
-              <input
-                type="date"
-                value={endDate}
-                onChange={(e) => setEndDate(e.target.value)}
-                className="py-1.5 px-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white"
-              />
-            </div>
-          </div>
+            <Plus size={16} />
+            <span>Raise Support Ticket</span>
+          </button>
         )}
       </div>
 
-      {/* Tickets List */}
-      {loading ? (
-        <div className="text-xs text-slate-400">Loading support tickets...</div>
-      ) : tickets.length === 0 ? (
-        <div className="p-12 text-center text-slate-500 bg-slate-900 rounded-3xl border border-slate-800 text-xs">
-          No support tickets found matching your selected query and time filter.
-        </div>
-      ) : (
-        <div className="space-y-4">
-          {tickets.map((t) => {
-            const priorityBadge =
-              t.priority === 'URGENT'
-                ? 'bg-red-500/20 text-red-400 border-red-500/30'
-                : t.priority === 'HIGH'
-                ? 'bg-orange-500/20 text-orange-400 border-orange-500/30'
-                : t.priority === 'MEDIUM'
-                ? 'bg-blue-500/20 text-blue-400 border-blue-500/30'
-                : 'bg-slate-800 text-slate-400 border-slate-700';
-
-            const statusBadge =
-              t.status === 'OPEN'
-                ? 'bg-amber-500/20 text-amber-400 border-amber-500/30'
-                : t.status === 'IN_PROGRESS'
-                ? 'bg-blue-500/20 text-blue-400 border-blue-500/30'
-                : t.status === 'RESOLVED'
-                ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
-                : 'bg-slate-700/40 text-slate-400 border-slate-600';
-
-            return (
-              <div
-                key={t.id}
-                className="p-6 rounded-3xl bg-slate-900 border border-slate-800 hover:border-slate-700 transition space-y-4 shadow-lg"
+      {/* Interactive Status Segmented Bar (Option 1: Linear / GitHub Style) */}
+      <div className="flex items-center space-x-2 overflow-x-auto pb-1 no-scrollbar">
+        {STATUS_TABS.map((tab) => {
+          const isActive = filterStatus === tab.key;
+          return (
+            <button
+              key={tab.key}
+              onClick={() => setFilterStatus(tab.key)}
+              className={`px-3.5 py-2 rounded-2xl text-xs font-semibold flex items-center space-x-2 border transition shrink-0 ${
+                isActive
+                  ? tab.activeStyle
+                  : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white hover:bg-slate-800/80'
+              }`}
+            >
+              {tab.dot && <span className={`w-2 h-2 rounded-full ${tab.dot}`} />}
+              <span>{tab.label}</span>
+              <span
+                className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-full ${
+                  isActive ? 'bg-black/30 text-white' : 'bg-slate-800 text-slate-300'
+                }`}
               >
-                {/* Header Row */}
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800/80 pb-3">
-                  <div className="flex items-center space-x-3">
-                    <span className="font-mono text-xs font-extrabold text-blue-400 px-2.5 py-1 rounded-xl bg-blue-500/10 border border-blue-500/20">
-                      {t.ticketNumber}
-                    </span>
-                    <span className={`text-[10px] px-2.5 py-0.5 rounded-full font-bold uppercase border ${priorityBadge}`}>
-                      {t.priority} Priority
-                    </span>
-                    <span className={`text-[10px] px-2.5 py-0.5 rounded-full font-bold uppercase border ${statusBadge}`}>
-                      {t.status.replace('_', ' ')}
-                    </span>
-                  </div>
+                {tab.count}
+              </span>
+            </button>
+          );
+        })}
+      </div>
 
-                  <div className="text-xs text-slate-500 font-mono">
-                    Raised {formatDateTime(t.createdAt)} by {t.createdBy?.firstName} {t.createdBy?.lastName}
-                  </div>
-                </div>
+      {/* Search & Filter Toolbar */}
+      <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
+        <div className="relative flex-1 max-w-md">
+          <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search tickets, clients, or issues..."
+            className="w-full pl-10 pr-4 py-2.5 bg-slate-900 border border-slate-800 rounded-2xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 transition"
+          />
+        </div>
 
-                {/* Main Info */}
-                <div>
-                  <h3 className="text-base font-bold text-white">{t.title}</h3>
-                  <p className="text-xs text-slate-300 mt-1 leading-relaxed">{t.description}</p>
-                </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {/* View Mode Toggle */}
+          <div className="flex items-center rounded-2xl bg-slate-900 border border-slate-800 p-1">
+            <button
+              onClick={() => setViewMode('list')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition ${
+                viewMode === 'list' ? 'bg-blue-600 text-white shadow' : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              <ListIcon size={13} />
+              <span>List</span>
+            </button>
+            <button
+              onClick={() => setViewMode('kanban')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition ${
+                viewMode === 'kanban' ? 'bg-blue-600 text-white shadow' : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              <LayoutGrid size={13} />
+              <span>Board</span>
+            </button>
+          </div>
 
-                {/* Assigned Meta Grid: Group, Client, Vehicle */}
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs pt-2">
-                  {/* Assigned Group */}
-                  <div className="p-3 rounded-2xl bg-slate-950/60 border border-slate-800/80 flex items-center space-x-3">
-                    <div
-                      className="w-8 h-8 rounded-xl flex items-center justify-center font-bold text-white shrink-0 text-xs"
-                      style={{ backgroundColor: t.assignedGroup?.color || '#3b82f6' }}
-                    >
-                      <UsersRound size={16} />
-                    </div>
-                    <div className="truncate">
-                      <p className="text-[10px] text-slate-500 uppercase font-semibold">Assigned Group</p>
-                      <p className="font-bold text-white truncate">{t.assignedGroup?.name || 'Unassigned'}</p>
-                    </div>
-                  </div>
+          <select
+            value={filterPriority}
+            onChange={(e) => setFilterPriority(e.target.value)}
+            className="py-2 px-3 bg-slate-900 border border-slate-800 rounded-2xl text-xs text-white focus:outline-none"
+          >
+            <option value="ALL">All Priorities</option>
+            <option value="URGENT">Urgent</option>
+            <option value="HIGH">High</option>
+            <option value="MEDIUM">Medium</option>
+            <option value="LOW">Low</option>
+          </select>
 
-                  {/* Linked Client */}
-                  <div className="p-3 rounded-2xl bg-slate-950/60 border border-slate-800/80 flex items-center space-x-3">
-                    <div className="w-8 h-8 rounded-xl bg-purple-500/10 text-purple-400 flex items-center justify-center shrink-0">
-                      <UserCheck size={16} />
-                    </div>
-                    <div className="truncate">
-                      <p className="text-[10px] text-slate-500 uppercase font-semibold">Client Account</p>
-                      <p className="font-bold text-white truncate">
-                        {t.client ? `${t.client.name} (${t.client.companyName || 'Individual'})` : 'No Client Attached'}
-                      </p>
-                    </div>
-                  </div>
+          <select
+            value={filterGroup}
+            onChange={(e) => setFilterGroup(e.target.value)}
+            className="py-2 px-3 bg-slate-900 border border-slate-800 rounded-2xl text-xs text-white max-w-[140px] truncate focus:outline-none"
+          >
+            <option value="ALL">All Groups</option>
+            {groups.map((g) => (
+              <option key={g.id} value={g.id}>
+                {g.name}
+              </option>
+            ))}
+          </select>
 
-                  {/* Linked Vehicle */}
-                  <div className="p-3 rounded-2xl bg-slate-950/60 border border-slate-800/80 flex items-center space-x-3">
-                    <div className="w-8 h-8 rounded-xl bg-amber-500/10 text-amber-400 flex items-center justify-center shrink-0">
-                      <Car size={16} />
-                    </div>
-                    <div className="truncate">
-                      <p className="text-[10px] text-slate-500 uppercase font-semibold">Assigned Vehicle</p>
-                      <p className="font-bold text-white truncate">
-                        {t.vehicle ? `${t.vehicle.registrationNo} (${t.vehicle.make} ${t.vehicle.model})` : 'No Vehicle Assigned'}
-                      </p>
-                    </div>
-                  </div>
-                </div>
+          {hasActiveFilters && (
+            <button
+              onClick={resetAllFilters}
+              className="p-2 rounded-2xl bg-slate-900 border border-slate-800 text-slate-400 hover:text-red-400 transition"
+              title="Reset Filters"
+            >
+              <RotateCcw size={14} />
+            </button>
+          )}
+        </div>
+      </div>
 
-                {/* Attached Inventory Devices */}
-                {t.inventoryItems && t.inventoryItems.length > 0 && (
-                  <div className="p-3 rounded-2xl bg-slate-950/80 border border-slate-800 space-y-1 text-xs">
-                    <p className="text-[10px] text-slate-500 font-bold uppercase flex items-center space-x-1">
-                      <Package size={12} className="text-blue-400" />
-                      <span>Attached Inventory Hardware Devices</span>
-                    </p>
-                    <div className="flex flex-wrap gap-2 pt-1">
-                      {t.inventoryItems.map((inv: any) => (
-                        <span
-                          key={inv.id}
-                          className="px-2.5 py-1 rounded-xl bg-blue-500/10 text-blue-300 font-mono text-[11px] border border-blue-500/20 inline-flex items-center space-x-1.5"
-                        >
-                          <Barcode size={10} />
+      {/* Main Content Area */}
+      {viewMode === 'list' ? (
+        /* ===================== MODERN HIGH-DENSITY LIST / ROW VIEW ===================== */
+        <div className="space-y-3">
+          {loading ? (
+            <div className="p-8 text-center text-xs text-slate-400 bg-slate-900/60 rounded-3xl border border-slate-800">
+              Loading support tickets...
+            </div>
+          ) : tickets.length === 0 ? (
+            <div className="p-12 text-center text-slate-500 bg-slate-900/60 rounded-3xl border border-slate-800">
+              <TicketIcon size={32} className="mx-auto text-slate-600 mb-2 opacity-60" />
+              <p className="text-sm font-semibold text-slate-400">No tickets match your filter criteria.</p>
+              <p className="text-xs text-slate-500 mt-1">Try resetting filters or raising a new support ticket.</p>
+            </div>
+          ) : (
+            tickets.map((t) => {
+              const priority = getPriorityStyle(t.priority);
+              const status = getStatusStyle(t.status);
+              const isOverdue =
+                t.dueDate &&
+                new Date(t.dueDate) < new Date() &&
+                t.status !== 'RESOLVED' &&
+                t.status !== 'CLOSED';
+
+              return (
+                <div
+                  key={t.id}
+                  onClick={() => setActiveTicketDrawer(t)}
+                  className="group p-4 rounded-3xl bg-slate-900 border border-slate-800 hover:border-blue-500/40 hover:bg-slate-900/90 transition-all cursor-pointer flex flex-col lg:flex-row lg:items-center justify-between gap-4 shadow-sm hover:shadow-md"
+                >
+                  {/* Left Column: ID, Status, Title, Description */}
+                  <div className="flex items-start space-x-3.5 min-w-0 flex-1">
+                    <div className="pt-0.5 shrink-0">
+                      <span className="font-mono text-xs font-bold text-blue-400 px-2.5 py-1 rounded-xl bg-blue-500/10 border border-blue-500/20 block text-center">
+                        {t.ticketNumber}
+                      </span>
+                    </div>
+
+                    <div className="space-y-1.5 min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className={`text-[10px] px-2.5 py-0.5 rounded-full font-bold uppercase ${status.badge}`}>
+                          {status.label}
+                        </span>
+                        <span className={`text-[10px] px-2.5 py-0.5 rounded-full font-bold uppercase ${priority.bg}`}>
+                          {t.priority}
+                        </span>
+                        <h3 className="font-bold text-white text-sm group-hover:text-blue-400 transition leading-snug">
+                          {t.title}
+                        </h3>
+                      </div>
+
+                      {t.description && (
+                        <p className="text-xs text-slate-400 line-clamp-1 leading-relaxed">{t.description}</p>
+                      )}
+
+                      {/* Metadata Chips Row */}
+                      <div className="flex flex-wrap items-center gap-2 pt-1 text-xs">
+                        {t.client && (
+                          <span className="inline-flex items-center gap-1.5 text-[11px] text-purple-300 bg-purple-950/30 border border-purple-500/20 px-2.5 py-0.5 rounded-xl">
+                            <Building2 size={12} className="text-purple-400 shrink-0" />
+                            <span className="truncate max-w-[140px]">{t.client.companyName || t.client.name}</span>
+                          </span>
+                        )}
+
+                        <span className="inline-flex items-center gap-1.5 text-[11px] text-slate-300 bg-slate-950 px-2.5 py-0.5 rounded-xl border border-slate-800">
+                          <User size={12} className="text-blue-400 shrink-0" />
                           <span>
-                            {inv.inventoryItem?.deviceName} ({inv.inventoryItem?.barcode})
+                            {t.assignedUser
+                              ? `${t.assignedUser.firstName} ${t.assignedUser.lastName}`
+                              : t.assignedGroup?.name || 'Unassigned'}
                           </span>
                         </span>
-                      ))}
+
+                        {t.dueDate && (
+                          <span
+                            className={`inline-flex items-center gap-1.5 text-[11px] font-mono px-2.5 py-0.5 rounded-xl ${
+                              isOverdue
+                                ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30 font-bold'
+                                : 'bg-slate-950 text-slate-400 border border-slate-800'
+                            }`}
+                          >
+                            <Clock size={12} className="shrink-0" />
+                            <span>Due {new Date(t.dueDate).toLocaleDateString()}</span>
+                          </span>
+                        )}
+
+                        {t.proofPhoto && (
+                          <span className="inline-flex items-center gap-1.5 text-[11px] text-emerald-300 bg-emerald-950/30 border border-emerald-500/20 px-2.5 py-0.5 rounded-xl">
+                            <ShieldCheck size={12} className="text-emerald-400 shrink-0" />
+                            <span>Verified Proof</span>
+                          </span>
+                        )}
+
+                        {t.inventoryItems && t.inventoryItems.length > 0 && (
+                          <span className="inline-flex items-center gap-1 text-[11px] text-blue-300 bg-blue-950/30 border border-blue-500/20 px-2 py-0.5 rounded-xl">
+                            <Package size={12} className="text-blue-400 shrink-0" />
+                            <span>{t.inventoryItems.length} Equipment</span>
+                          </span>
+                        )}
+
+                        {(t._count?.comments > 0 || t.comments?.length > 0) && (
+                          <span className="inline-flex items-center gap-1 text-[11px] text-slate-400 pl-1">
+                            <MessageSquare size={12} />
+                            <span>{t._count?.comments || t.comments?.length || 0}</span>
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
-                )}
 
-                {/* Status Advancement Bar Actions */}
-                <div className="flex items-center justify-between pt-2">
-                  <div className="text-[11px] text-slate-400">
-                    {t.resolutionNote && (
-                      <span className="text-emerald-400 font-semibold">
-                        Resolution Note: {t.resolutionNote}
-                      </span>
-                    )}
-                  </div>
-
-                  <div className="flex items-center space-x-2">
+                  {/* Right Column: Workflow Action Button & Admin Controls */}
+                  <div
+                    className="flex items-center space-x-2 shrink-0 self-end lg:self-center pt-2 lg:pt-0 border-t lg:border-t-0 border-slate-800/80 w-full lg:w-auto justify-between lg:justify-end"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {/* Workflow Progress Button */}
                     {t.status === 'OPEN' && (
                       <button
                         onClick={() => handleUpdateStatus(t.id, 'IN_PROGRESS')}
-                        className="px-3 py-1.5 rounded-xl bg-blue-600/20 text-blue-400 hover:bg-blue-600/30 text-xs font-semibold border border-blue-500/30 transition"
+                        className="px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition flex items-center space-x-1.5 shadow-sm"
                       >
-                        Start Work (In Progress)
+                        <span>Start Work</span>
+                        <ArrowRight size={13} />
                       </button>
                     )}
 
                     {t.status === 'IN_PROGRESS' && (
-                      <button
-                        onClick={() => {
-                          setTicketToResolve(t);
-                          setResolveForm({ resolutionNote: '', inventoryItemIds: [] });
-                          setResolveModalOpen(true);
-                        }}
-                        className="px-3 py-1.5 rounded-xl bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/30 text-xs font-semibold border border-emerald-500/30 transition"
-                      >
-                        Mark Resolved (Add Solution Devices)
-                      </button>
+                      <div className="flex items-center space-x-1.5">
+                        {isManagerOrAdmin && (
+                          <button
+                            onClick={() => handleUpdateStatus(t.id, 'OPEN')}
+                            className="px-2.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition"
+                            title="Revert to Open (Admin/Manager Only)"
+                          >
+                            ← Open
+                          </button>
+                        )}
+                        <button
+                          onClick={() => handleOpenResolveModal(t)}
+                          className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition flex items-center space-x-1.5 shadow-sm"
+                        >
+                          <span>Resolve (Proof)</span>
+                          <CheckCircle2 size={13} />
+                        </button>
+                      </div>
                     )}
 
                     {t.status === 'RESOLVED' && (
+                      <div className="flex items-center space-x-2">
+                        {isManagerOrAdmin ? (
+                          <>
+                            <button
+                              onClick={() => handleUpdateStatus(t.id, 'IN_PROGRESS')}
+                              className="px-2.5 py-2 rounded-xl bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 border border-blue-500/30 text-xs font-semibold transition flex items-center space-x-1"
+                              title="Reopen to In Progress"
+                            >
+                              <RotateCcw size={12} />
+                              <span>Reopen</span>
+                            </button>
+                            <button
+                              onClick={() => handleUpdateStatus(t.id, 'CLOSED')}
+                              className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold transition"
+                            >
+                              Close Ticket →
+                            </button>
+                          </>
+                        ) : (
+                          <span className="text-xs text-emerald-400 font-semibold flex items-center gap-1.5 bg-emerald-950/30 px-3 py-1.5 rounded-xl border border-emerald-500/20">
+                            <ShieldCheck size={14} />
+                            <span>Submitted for Manager Close</span>
+                          </span>
+                        )}
+                      </div>
+                    )}
+
+                    {t.status === 'CLOSED' && (
+                      isManagerOrAdmin ? (
+                        <button
+                          onClick={() => handleUpdateStatus(t.id, 'IN_PROGRESS')}
+                          className="px-3 py-2 rounded-xl bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 border border-blue-500/30 text-xs font-semibold transition flex items-center space-x-1"
+                        >
+                          <RotateCcw size={12} />
+                          <span>Reopen</span>
+                        </button>
+                      ) : (
+                        <span className="text-xs text-slate-500 font-mono py-1">Archived</span>
+                      )
+                    )}
+
+                    {/* Admin Delete Trash Button */}
+                    {isAdmin && (
                       <button
-                        onClick={() => handleUpdateStatus(t.id, 'CLOSED')}
-                        className="px-3 py-1.5 rounded-xl bg-slate-800 text-slate-300 hover:bg-slate-700 text-xs font-semibold transition"
+                        type="button"
+                        onClick={() => handleDeleteTicket(t.id)}
+                        className="p-2 rounded-xl bg-slate-800/60 hover:bg-rose-600/20 text-slate-500 hover:text-rose-400 transition"
+                        title="Delete Ticket (Admin Only)"
                       >
-                        Close Ticket
+                        <Trash2 size={14} />
                       </button>
                     )}
                   </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+      ) : (
+        /* ===================== KANBAN BOARD VIEW ===================== */
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 items-start">
+          {KANBAN_COLUMNS.map((col) => {
+            const colTickets = tickets.filter((t) => t.status === col.key);
+
+            return (
+              <div
+                key={col.key}
+                className="rounded-3xl bg-slate-900/60 border border-slate-800 p-4 space-y-3 min-h-[480px] flex flex-col"
+              >
+                {/* Column Header */}
+                <div className="flex items-center justify-between px-1 pb-1">
+                  <div className="flex items-center space-x-2">
+                    <span className={`w-2.5 h-2.5 rounded-full ${col.dot}`} />
+                    <h3 className={`text-xs font-extrabold uppercase tracking-wider ${col.color}`}>{col.title}</h3>
+                  </div>
+                  <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-slate-800 text-slate-300">
+                    {colTickets.length}
+                  </span>
+                </div>
+
+                {/* Column Cards */}
+                <div className="space-y-3 flex-1 overflow-y-auto max-h-[640px] pr-0.5">
+                  {colTickets.length === 0 ? (
+                    <div className="py-12 text-center text-xs text-slate-500 border border-dashed border-slate-800 rounded-2xl">
+                      No {col.title.toLowerCase()} tickets
+                    </div>
+                  ) : (
+                    colTickets.map((t) => {
+                      const priority = getPriorityStyle(t.priority);
+
+                      return (
+                        <div
+                          key={t.id}
+                          onClick={() => setActiveTicketDrawer(t)}
+                          className="group p-4 rounded-2xl bg-slate-900 border border-slate-800 hover:border-blue-500/40 transition cursor-pointer space-y-3 shadow-md"
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="font-mono text-xs font-bold text-blue-400">
+                              {t.ticketNumber}
+                            </span>
+                            <span className={`text-[9px] px-2 py-0.5 rounded-full font-bold uppercase ${priority.bg}`}>
+                              {t.priority}
+                            </span>
+                          </div>
+
+                          <h4 className="font-bold text-white text-xs leading-snug group-hover:text-blue-400 transition line-clamp-2">
+                            {t.title}
+                          </h4>
+
+                          {t.client && (
+                            <div className="flex items-center space-x-1.5 text-[10px] text-purple-300 bg-purple-950/30 px-2 py-1 rounded-xl border border-purple-500/20 truncate">
+                              <Building2 size={11} className="shrink-0 text-purple-400" />
+                              <span className="truncate">{t.client.companyName || t.client.name}</span>
+                            </div>
+                          )}
+
+                          <div className="flex items-center justify-between pt-2 border-t border-slate-800/80 text-[11px]">
+                            <span className="truncate text-slate-400 text-[10px]">
+                              {t.assignedUser ? `${t.assignedUser.firstName}` : 'Unassigned'}
+                            </span>
+                            <span className="text-blue-400 font-semibold text-[10px]">View Hub →</span>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
                 </div>
               </div>
             );
@@ -569,231 +937,723 @@ export default function TicketsPage() {
         </div>
       )}
 
-      {/* Raise Ticket Modal */}
-      {modalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 w-full max-w-lg shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <h2 className="text-lg font-bold text-white flex items-center space-x-2">
-                <TicketIcon size={20} className="text-blue-400" />
-                <span>Raise Support Ticket</span>
-              </h2>
-              <button
-                onClick={() => setModalOpen(false)}
-                className="text-slate-400 hover:text-white text-xs px-2 py-1"
-              >
-                ✕
-              </button>
+      {/* ===================== TICKET HUB & RESOLUTION AUDIT MODAL ===================== */}
+      <Modal
+        open={!!activeTicketDrawer}
+        onClose={() => setActiveTicketDrawer(null)}
+        title={`Ticket Hub • ${activeTicketDrawer?.ticketNumber || ''}`}
+        icon={<TicketIcon size={20} className="text-blue-400" />}
+        maxWidth="max-w-3xl"
+      >
+        {activeTicketDrawer && (
+          <div className="space-y-4 py-1">
+            {/* Overview Card */}
+            <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-2">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <h3 className="text-base font-bold text-white">{activeTicketDrawer.title}</h3>
+                <div className="flex items-center space-x-2">
+                  <span className={`text-[10px] px-2.5 py-0.5 rounded-full font-bold uppercase ${getPriorityStyle(activeTicketDrawer.priority).bg}`}>
+                    {activeTicketDrawer.priority}
+                  </span>
+                  <span className={`text-[10px] px-2.5 py-0.5 rounded-full font-bold uppercase ${getStatusStyle(activeTicketDrawer.status).badge}`}>
+                    {getStatusStyle(activeTicketDrawer.status).label}
+                  </span>
+                </div>
+              </div>
+              <p className="text-xs text-slate-300 leading-relaxed">{activeTicketDrawer.description}</p>
             </div>
 
-            <form onSubmit={handleCreateTicket} className="space-y-4">
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-400 uppercase mb-1">
-                  Ticket Title / Issue Summary
-                </label>
+            {/* Quick Status Control Bar (Strict RBAC) */}
+            <div className="p-3 rounded-2xl bg-slate-950 border border-slate-800 space-y-2">
+              <p className="text-[10px] text-slate-500 uppercase font-bold">
+                {isManagerOrAdmin ? 'Manager Status Progression & Reopen Controls' : 'Ticket Workflow Progression'}
+              </p>
+
+              {isManagerOrAdmin ? (
+                /* Full Controls for Admins and Product Managers */
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  <button
+                    onClick={() => handleUpdateStatus(activeTicketDrawer.id, 'OPEN')}
+                    className={`py-1.5 px-2 rounded-xl text-[11px] font-bold border transition ${
+                      activeTicketDrawer.status === 'OPEN'
+                        ? 'bg-amber-500/20 border-amber-500 text-amber-400 shadow-sm'
+                        : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white hover:bg-slate-800'
+                    }`}
+                  >
+                    🟡 Move to Open
+                  </button>
+
+                  <button
+                    onClick={() => handleUpdateStatus(activeTicketDrawer.id, 'IN_PROGRESS')}
+                    className={`py-1.5 px-2 rounded-xl text-[11px] font-bold border transition ${
+                      activeTicketDrawer.status === 'IN_PROGRESS'
+                        ? 'bg-blue-500/20 border-blue-500 text-blue-400 shadow-sm'
+                        : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white hover:bg-slate-800'
+                    }`}
+                  >
+                    🔵 In Progress
+                  </button>
+
+                  <button
+                    onClick={() => handleOpenResolveModal(activeTicketDrawer)}
+                    className={`py-1.5 px-2 rounded-xl text-[11px] font-bold border transition ${
+                      activeTicketDrawer.status === 'RESOLVED'
+                        ? 'bg-emerald-500/20 border-emerald-500 text-emerald-400 shadow-sm'
+                        : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-emerald-400 hover:bg-slate-800'
+                    }`}
+                  >
+                    🟢 Resolve / Proof
+                  </button>
+
+                  <button
+                    onClick={() => handleUpdateStatus(activeTicketDrawer.id, 'CLOSED')}
+                    className={`py-1.5 px-2 rounded-xl text-[11px] font-bold border transition ${
+                      activeTicketDrawer.status === 'CLOSED'
+                        ? 'bg-slate-700/60 border-slate-500 text-white shadow-sm'
+                        : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white hover:bg-slate-800'
+                    }`}
+                  >
+                    ⚪ Close Ticket
+                  </button>
+                </div>
+              ) : (
+                /* Forward-only Workflow for Employees */
+                <div className="flex items-center space-x-2">
+                  {activeTicketDrawer.status === 'OPEN' && (
+                    <button
+                      onClick={() => handleUpdateStatus(activeTicketDrawer.id, 'IN_PROGRESS')}
+                      className="w-full py-2 px-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition flex items-center justify-center space-x-1.5"
+                    >
+                      <span>Start Work → Move to In Progress</span>
+                    </button>
+                  )}
+
+                  {activeTicketDrawer.status === 'IN_PROGRESS' && (
+                    <button
+                      onClick={() => handleOpenResolveModal(activeTicketDrawer)}
+                      className="w-full py-2 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition flex items-center justify-center space-x-1.5"
+                    >
+                      <span>Submit Resolution & Proof Photo →</span>
+                    </button>
+                  )}
+
+                  {activeTicketDrawer.status === 'RESOLVED' && (
+                    <div className="w-full py-2 px-3 rounded-xl bg-emerald-950/40 border border-emerald-500/30 text-emerald-400 text-xs font-semibold text-center flex items-center justify-center space-x-1.5">
+                      <ShieldCheck size={14} />
+                      <span>Resolution submitted. Pending Product Manager verification.</span>
+                    </div>
+                  )}
+
+                  {activeTicketDrawer.status === 'CLOSED' && (
+                    <div className="w-full py-2 px-3 rounded-xl bg-slate-900 border border-slate-800 text-slate-500 text-xs text-center">
+                      This ticket has been officially closed and archived.
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Meta Grid */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+              <div className="p-3 rounded-2xl bg-slate-950 border border-slate-800 space-y-1">
+                <p className="text-[10px] text-slate-500 uppercase font-bold">Client Account</p>
+                <p className="font-bold text-white truncate">
+                  {activeTicketDrawer.client?.name || activeTicketDrawer.client?.companyName || 'No Client'}
+                </p>
+              </div>
+
+              <div className="p-3 rounded-2xl bg-slate-950 border border-slate-800 space-y-1">
+                <p className="text-[10px] text-slate-500 uppercase font-bold">Assigned Personnel</p>
+                <p className="font-bold text-white truncate">
+                  {activeTicketDrawer.assignedUser
+                    ? `${activeTicketDrawer.assignedUser.firstName} ${activeTicketDrawer.assignedUser.lastName}`
+                    : activeTicketDrawer.assignedGroup?.name || 'Unassigned'}
+                </p>
+              </div>
+
+              <div className="p-3 rounded-2xl bg-slate-950 border border-slate-800 space-y-1">
+                <p className="text-[10px] text-slate-500 uppercase font-bold">Target SLA Date</p>
+                <p className="font-bold text-white">
+                  {activeTicketDrawer.dueDate ? new Date(activeTicketDrawer.dueDate).toLocaleDateString() : 'No Deadline'}
+                </p>
+              </div>
+            </div>
+
+            {/* ================= RESOLUTION AUDIT (GPS VISIBLE TO ADMIN/MANAGERS ONLY) ================= */}
+            {(activeTicketDrawer.status === 'RESOLVED' || activeTicketDrawer.status === 'CLOSED' || activeTicketDrawer.proofPhoto) && (
+              <div className="p-4 rounded-2xl bg-emerald-950/20 border border-emerald-500/30 space-y-3 text-xs">
+                <div className="flex items-center justify-between border-b border-emerald-500/20 pb-2">
+                  <div className="flex items-center space-x-2">
+                    <ShieldCheck size={16} className="text-emerald-400" />
+                    <span className="font-bold text-emerald-400 text-sm">Resolution Verification & Audit</span>
+                  </div>
+                  {activeTicketDrawer.resolvedAt && (
+                    <span className="text-[10px] text-slate-400 font-mono">
+                      Resolved {formatDateTime(activeTicketDrawer.resolvedAt)}
+                    </span>
+                  )}
+                </div>
+
+                <div className={`grid gap-3 ${isManagerOrAdmin && activeTicketDrawer.resolveLat ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-1'}`}>
+                  {/* Resolver Info */}
+                  <div className="space-y-1 bg-slate-950/80 p-3 rounded-xl border border-slate-800">
+                    <p className="text-[10px] text-slate-500 uppercase font-bold">Resolved By Technician</p>
+                    <p className="font-bold text-white flex items-center space-x-1.5">
+                      <User size={13} className="text-emerald-400" />
+                      <span>
+                        {activeTicketDrawer.resolvedBy
+                          ? `${activeTicketDrawer.resolvedBy.firstName} ${activeTicketDrawer.resolvedBy.lastName}`
+                          : activeTicketDrawer.assignedUser
+                          ? `${activeTicketDrawer.assignedUser.firstName} ${activeTicketDrawer.assignedUser.lastName}`
+                          : 'Technician on Record'}
+                      </span>
+                    </p>
+                    {activeTicketDrawer.resolutionNote && (
+                      <p className="text-slate-300 text-xs mt-1 pt-1 border-t border-slate-800/80">
+                        <span className="text-slate-500 font-semibold">Solution Note:</span> {activeTicketDrawer.resolutionNote}
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Geolocation Audit Log (Restricted to Admin/Manager Only) */}
+                  {isManagerOrAdmin && activeTicketDrawer.resolveLat && activeTicketDrawer.resolveLng && (
+                    <div className="space-y-1 bg-slate-950/80 p-3 rounded-xl border border-slate-800">
+                      <p className="text-[10px] text-slate-500 uppercase font-bold flex items-center justify-between">
+                        <span>Technician Resolve Location</span>
+                        {activeTicketDrawer.resolveAccuracy && (
+                          <span className="text-[9px] text-emerald-400 font-mono">
+                            ±{activeTicketDrawer.resolveAccuracy}m Accuracy
+                          </span>
+                        )}
+                      </p>
+
+                      <div className="space-y-1.5 pt-0.5">
+                        <p className="text-slate-200 text-xs flex items-start space-x-1.5">
+                          <MapPin size={13} className="text-emerald-400 shrink-0 mt-0.5" />
+                          <span className="leading-snug">
+                            {activeTicketDrawer.resolveAddress ||
+                              `${activeTicketDrawer.resolveLat.toFixed(5)}° N, ${activeTicketDrawer.resolveLng.toFixed(5)}° E`}
+                          </span>
+                        </p>
+
+                        <div className="flex items-center space-x-2 pt-1">
+                          <a
+                            href={`https://www.google.com/maps?q=${activeTicketDrawer.resolveLat},${activeTicketDrawer.resolveLng}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="px-2.5 py-1 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 text-[10px] font-semibold flex items-center space-x-1 transition border border-emerald-500/30"
+                          >
+                            <ExternalLink size={10} />
+                            <span>Verify on Google Maps</span>
+                          </a>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Resolution Proof Photo Thumbnail */}
+                {activeTicketDrawer.proofPhoto && (
+                  <div className="space-y-1 pt-1">
+                    <p className="text-[10px] text-slate-400 uppercase font-bold">Attached Site Proof of Work</p>
+                    <div
+                      onClick={() =>
+                        setPreviewModalPhoto(
+                          activeTicketDrawer.proofPhoto.startsWith('http')
+                            ? activeTicketDrawer.proofPhoto
+                            : `${API_BASE_URL}${activeTicketDrawer.proofPhoto}`
+                        )
+                      }
+                      className="relative group rounded-xl overflow-hidden border border-emerald-500/40 bg-slate-950 max-w-sm cursor-pointer hover:border-emerald-400 transition shadow-lg"
+                    >
+                      <img
+                        src={
+                          activeTicketDrawer.proofPhoto.startsWith('http')
+                            ? activeTicketDrawer.proofPhoto
+                            : `${API_BASE_URL}${activeTicketDrawer.proofPhoto}`
+                        }
+                        alt="Resolution proof photo"
+                        className="w-full max-h-48 object-cover group-hover:scale-105 transition duration-300"
+                      />
+                      <div className="p-2 bg-slate-950/90 border-t border-emerald-500/20 flex items-center justify-between text-[11px]">
+                        <span className="text-slate-300 font-medium flex items-center gap-1">
+                          <FileImage size={13} className="text-emerald-400" />
+                          <span>Resolution Proof Photo</span>
+                        </span>
+                        <span className="text-emerald-400 font-semibold flex items-center gap-0.5 text-[10px]">
+                          <Maximize2 size={10} /> Inspect High-Res
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Attached Hardware (if any) */}
+            {activeTicketDrawer.inventoryItems && activeTicketDrawer.inventoryItems.length > 0 && (
+              <div className="p-3 rounded-2xl bg-slate-950 border border-slate-800 space-y-1 text-xs">
+                <p className="text-[10px] text-slate-500 font-bold uppercase flex items-center gap-1">
+                  <Package size={11} className="text-blue-400" />
+                  <span>Equipment Attached ({activeTicketDrawer.inventoryItems.length})</span>
+                </p>
+                <div className="flex flex-wrap gap-1.5 pt-0.5">
+                  {activeTicketDrawer.inventoryItems.map((inv: any) => (
+                    <span
+                      key={inv.id}
+                      className="px-2.5 py-1 rounded-xl bg-blue-500/10 text-blue-300 font-mono text-[10px] border border-blue-500/20 inline-flex items-center space-x-1"
+                    >
+                      <Barcode size={10} />
+                      <span>{inv.inventoryItem?.deviceName}</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Discussion & Photos Feed */}
+            <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-3">
+              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                <MessageSquare size={13} className="text-blue-400" />
+                <span>Discussion & Site Photos ({activeTicketDrawer.comments?.length || 0})</span>
+              </h4>
+
+              <div className="space-y-3 max-h-56 overflow-y-auto pr-1">
+                {activeTicketDrawer.comments && activeTicketDrawer.comments.length > 0 ? (
+                  activeTicketDrawer.comments.map((c: any) => {
+                    const photoFullUrl = c.photo ? (c.photo.startsWith('http') ? c.photo : `${API_BASE_URL}${c.photo}`) : null;
+
+                    return (
+                      <div
+                        key={c.id}
+                        className="p-3 rounded-xl bg-slate-900 border border-slate-800 flex items-start justify-between gap-3 text-xs"
+                      >
+                        <div className="flex items-start space-x-2.5 flex-1 min-w-0">
+                          <div className="w-6 h-6 rounded-full bg-blue-600/30 text-blue-400 font-bold text-[10px] flex items-center justify-center shrink-0">
+                            {c.author?.firstName?.charAt(0) || 'U'}
+                          </div>
+                          <div className="space-y-1 flex-1 min-w-0">
+                            <div className="flex items-center space-x-2">
+                              <span className="font-bold text-white">
+                                {c.author?.firstName} {c.author?.lastName}
+                              </span>
+                              <span className="text-[10px] text-slate-500 font-mono">
+                                {formatDateTime(c.createdAt)}
+                              </span>
+                            </div>
+                            {c.content && <p className="text-slate-300 leading-relaxed break-words">{c.content}</p>}
+
+                            {photoFullUrl && (
+                              <div className="pt-1">
+                                <div
+                                  onClick={() => setPreviewModalPhoto(photoFullUrl)}
+                                  className="relative group rounded-xl overflow-hidden border border-slate-700/80 bg-slate-950 max-w-xs cursor-pointer hover:border-blue-500/50 transition shadow-md"
+                                >
+                                  <img
+                                    src={photoFullUrl}
+                                    alt="Site photo"
+                                    className="w-full max-h-40 object-cover group-hover:scale-105 transition duration-200"
+                                    onError={(e) => {
+                                      (e.target as HTMLElement).style.display = 'none';
+                                    }}
+                                  />
+                                  <div className="p-1.5 bg-slate-950/90 border-t border-slate-800 flex items-center justify-between text-[10px]">
+                                    <span className="text-slate-300 font-medium flex items-center gap-1">
+                                      <FileImage size={11} className="text-blue-400" />
+                                      <span>Attached Photo</span>
+                                    </span>
+                                    <span className="text-blue-400 font-semibold flex items-center gap-0.5">
+                                      <Maximize2 size={9} /> High-Res
+                                    </span>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        {(c.authorId === user?.id || isAdmin) && (
+                          <button
+                            onClick={() => handleDeleteComment(c.id)}
+                            className="text-slate-500 hover:text-red-400 transition p-1 shrink-0"
+                            title="Delete comment"
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })
+                ) : (
+                  <p className="text-xs text-slate-500 text-center py-4">No comments or photos yet.</p>
+                )}
+              </div>
+
+              {selectedPhotoFile && (
+                <div className="flex items-center justify-between p-2 rounded-xl bg-slate-900 border border-blue-500/30 gap-2">
+                  <div className="flex items-center space-x-2 min-w-0">
+                    {photoPreviewUrl ? (
+                      <img
+                        src={photoPreviewUrl}
+                        alt="Selected preview"
+                        className="w-9 h-9 rounded-lg object-cover border border-slate-700 shrink-0"
+                      />
+                    ) : (
+                      <div className="w-9 h-9 rounded-lg bg-slate-800 text-blue-400 flex items-center justify-center shrink-0">
+                        <FileImage size={16} />
+                      </div>
+                    )}
+                    <div className="truncate text-xs">
+                      <p className="font-semibold text-white truncate">{selectedPhotoFile.name}</p>
+                      <p className="text-[10px] text-slate-400 font-mono">
+                        {(selectedPhotoFile.size / (1024 * 1024)).toFixed(2)} MB • Ready
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleClearPhoto}
+                    className="p-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-rose-400 transition shrink-0"
+                    title="Remove Photo"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              )}
+
+              <form onSubmit={handleAddComment} className="flex items-center space-x-2 pt-2 border-t border-slate-800">
+                <input
+                  ref={photoInputRef}
+                  type="file"
+                  accept="image/*,.heic,.heif,.dng,.raw,.cr2,.nef,.arw,.tiff,.tif,.bmp"
+                  onChange={handlePhotoSelect}
+                  className="hidden"
+                />
+
+                <button
+                  type="button"
+                  onClick={() => photoInputRef.current?.click()}
+                  className={`p-2.5 rounded-xl border transition flex items-center justify-center shrink-0 ${
+                    selectedPhotoFile
+                      ? 'bg-blue-600/20 border-blue-500/50 text-blue-400'
+                      : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white hover:bg-slate-800'
+                  }`}
+                  title="Attach High-Resolution / RAW Site Photo"
+                >
+                  <Camera size={16} />
+                </button>
+
                 <input
                   type="text"
-                  value={form.title}
-                  onChange={(e) => setForm({ ...form, title: e.target.value })}
-                  placeholder="e.g. CCTV Camera Malfunction at Client Site Sector 62"
-                  className="w-full p-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white"
-                  required
+                  value={commentText}
+                  onChange={(e) => setCommentText(e.target.value)}
+                  placeholder={selectedPhotoFile ? 'Add optional note for attached photo...' : 'Post progress update or question...'}
+                  className={`flex-1 ${inputClassName}`}
                 />
-              </div>
 
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-400 uppercase mb-1">
-                  Detailed Issue Description
-                </label>
-                <textarea
-                  value={form.description}
-                  onChange={(e) => setForm({ ...form, description: e.target.value })}
-                  placeholder="Explain problem details, location, and requirement..."
-                  rows={3}
-                  className="w-full p-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white resize-none"
-                  required
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-400 uppercase mb-1">
-                    Priority Level
-                  </label>
-                  <select
-                    value={form.priority}
-                    onChange={(e) => setForm({ ...form, priority: e.target.value })}
-                    className="w-full p-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white"
-                  >
-                    <option value="LOW">Low</option>
-                    <option value="MEDIUM">Medium</option>
-                    <option value="HIGH">High</option>
-                    <option value="URGENT">URGENT</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-400 uppercase mb-1">
-                    Assign to Team / Group
-                  </label>
-                  <select
-                    value={form.assignedGroupId}
-                    onChange={(e) => setForm({ ...form, assignedGroupId: e.target.value })}
-                    className="w-full p-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white"
-                  >
-                    <option value="">Select Group (Optional)</option>
-                    {groups.map((g) => (
-                      <option key={g.id} value={g.id}>
-                        {g.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-400 uppercase mb-1">
-                    Link Client Account
-                  </label>
-                  <select
-                    value={form.clientId}
-                    onChange={(e) => setForm({ ...form, clientId: e.target.value })}
-                    className="w-full p-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white"
-                  >
-                    <option value="">Select Client (Optional)</option>
-                    {clients.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name} {c.companyName ? `(${c.companyName})` : ''}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-400 uppercase mb-1">
-                    Assign Vehicle for Ticket
-                  </label>
-                  <select
-                    value={form.vehicleId}
-                    onChange={(e) => setForm({ ...form, vehicleId: e.target.value })}
-                    className="w-full p-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white"
-                  >
-                    <option value="">Select Vehicle (Optional)</option>
-                    {vehicles.map((v) => (
-                      <option key={v.id} value={v.id}>
-                        {v.registrationNo} ({v.make} {v.model})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              {/* Attach Inventory Devices */}
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-400 uppercase mb-1">
-                  Assign Inventory Devices to Ticket & Group
-                </label>
-                <select
-                  multiple
-                  value={form.inventoryItemIds}
-                  onChange={(e) => {
-                    const selected = Array.from(e.target.selectedOptions, (opt) => opt.value);
-                    setForm({ ...form, inventoryItemIds: selected });
-                  }}
-                  className="w-full p-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white h-24"
-                >
-                  {inventoryList.map((inv) => (
-                    <option key={inv.id} value={inv.id}>
-                      {inv.deviceName} ({inv.barcode}) — {inv.condition} [{inv.status}]
-                    </option>
-                  ))}
-                </select>
-                <p className="text-[10px] text-slate-500 mt-1">Hold Ctrl/Cmd to select multiple devices.</p>
-              </div>
-
-              <div className="flex items-center justify-end space-x-3 pt-4 border-t border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => setModalOpen(false)}
-                  className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 text-xs font-semibold"
-                >
-                  Cancel
-                </button>
                 <button
                   type="submit"
-                  disabled={submitting}
-                  className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold"
+                  disabled={submittingComment || (!commentText.trim() && !selectedPhotoFile)}
+                  className="px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition flex items-center gap-1.5 shrink-0 disabled:opacity-50"
                 >
-                  {submitting ? 'Raising Ticket...' : 'Raise Ticket'}
+                  <Send size={12} />
+                  <span>{submittingComment ? 'Sending...' : 'Post'}</span>
+                </button>
+              </form>
+            </div>
+
+            {/* Admin-Only Ticket Delete Option */}
+            {isAdmin && (
+              <div className="pt-3 border-t border-slate-800/80 flex items-center justify-between">
+                <span className="text-[10px] text-slate-500 uppercase font-bold flex items-center gap-1">
+                  <ShieldCheck size={12} className="text-rose-400" />
+                  <span>Admin Zone</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => handleDeleteTicket(activeTicketDrawer.id)}
+                  className="px-3 py-1.5 rounded-xl bg-rose-600/10 hover:bg-rose-600/20 text-rose-400 border border-rose-500/30 text-xs font-semibold transition flex items-center space-x-1.5"
+                >
+                  <Trash2 size={13} />
+                  <span>Permanently Delete Ticket</span>
                 </button>
               </div>
-            </form>
+            )}
           </div>
-        </div>
-      )}
+        )}
+      </Modal>
 
-      {/* Ticket Resolution Modal */}
-      {resolveModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 w-full max-w-md shadow-2xl space-y-4">
-            <h2 className="text-lg font-bold text-white flex items-center space-x-2">
-              <CheckCircle2 size={20} className="text-emerald-400" />
-              <span>Mark Ticket Resolved</span>
-            </h2>
+      {/* ===================== CREATE TICKET MODAL ===================== */}
+      <Modal
+        open={modalOpen}
+        onClose={() => setModalOpen(false)}
+        title="Raise Support Ticket"
+        icon={<TicketIcon size={20} className="text-blue-400" />}
+        maxWidth="max-w-xl"
+      >
+        <form onSubmit={handleCreateTicket} className="space-y-4">
+          <FormField label="Ticket Title">
+            <input
+              type="text"
+              value={form.title}
+              onChange={(e) => setForm({ ...form, title: e.target.value })}
+              placeholder="e.g. CCTV Camera Offline at Sector 4"
+              className={inputClassName}
+              required
+            />
+          </FormField>
 
-            <form onSubmit={handleResolveSubmit} className="space-y-4">
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-400 uppercase mb-1">
-                  Resolution / Solution Notes
-                </label>
-                <textarea
-                  value={resolveForm.resolutionNote}
-                  onChange={(e) => setResolveForm({ ...resolveForm, resolutionNote: e.target.value })}
-                  placeholder="Describe resolution steps taken by the group..."
-                  rows={3}
-                  className="w-full p-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white resize-none"
-                  required
-                />
-              </div>
+          <FormField label="Description">
+            <textarea
+              value={form.description}
+              onChange={(e) => setForm({ ...form, description: e.target.value })}
+              rows={3}
+              placeholder="Describe the issue, reported symptoms, or customer request..."
+              className={textareaClassName}
+              required
+            />
+          </FormField>
 
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-400 uppercase mb-1">
-                  Attach Installed / Replacement Devices
-                </label>
-                <select
-                  multiple
-                  value={resolveForm.inventoryItemIds}
-                  onChange={(e) => {
-                    const selected = Array.from(e.target.selectedOptions, (opt) => opt.value);
-                    setResolveForm({ ...resolveForm, inventoryItemIds: selected });
-                  }}
-                  className="w-full p-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white h-24"
-                >
-                  {inventoryList.map((inv) => (
-                    <option key={inv.id} value={inv.id}>
-                      {inv.deviceName} ({inv.barcode}) — {inv.condition}
-                    </option>
-                  ))}
-                </select>
-              </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <FormField label="Priority Level">
+              <select
+                value={form.priority}
+                onChange={(e) => setForm({ ...form, priority: e.target.value })}
+                className={inputClassName}
+              >
+                <option value="LOW">Low Priority</option>
+                <option value="MEDIUM">Medium Priority</option>
+                <option value="HIGH">High Priority</option>
+                <option value="URGENT">Urgent / Critical</option>
+              </select>
+            </FormField>
 
-              <div className="flex items-center justify-end space-x-3 pt-4 border-t border-slate-800">
+            <FormField label="Target SLA Due Date">
+              <input
+                type="date"
+                value={form.dueDate}
+                onChange={(e) => setForm({ ...form, dueDate: e.target.value })}
+                className={inputClassName}
+              />
+            </FormField>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <FormField label="Assign Field Group">
+              <select
+                value={form.assignedGroupId}
+                onChange={(e) => setForm({ ...form, assignedGroupId: e.target.value })}
+                className={inputClassName}
+              >
+                <option value="">Select Group (Optional)...</option>
+                {groups.map((g) => (
+                  <option key={g.id} value={g.id}>
+                    {g.name}
+                  </option>
+                ))}
+              </select>
+            </FormField>
+
+            <FormField label="Assign Specific Technician">
+              <select
+                value={form.assignedUserId}
+                onChange={(e) => setForm({ ...form, assignedUserId: e.target.value })}
+                className={inputClassName}
+              >
+                <option value="">Select Technician (Optional)...</option>
+                {usersList.map((u) => (
+                  <option key={u.id} value={u.id}>
+                    {u.firstName} {u.lastName}
+                  </option>
+                ))}
+              </select>
+            </FormField>
+          </div>
+
+          <FormField label={`Assign Hardware / Equipment (${form.inventoryItemIds.length} Selected)`}>
+            <div className="space-y-1 max-h-32 overflow-y-auto bg-slate-950 p-2 rounded-2xl border border-slate-800">
+              {inventoryList.map((inv) => {
+                const isSelected = form.inventoryItemIds.includes(inv.id);
+                return (
+                  <div
+                    key={inv.id}
+                    onClick={() => toggleInventorySelection(inv.id)}
+                    className={`p-2 rounded-xl flex items-center justify-between cursor-pointer transition text-xs ${
+                      isSelected ? 'bg-blue-600/20 border border-blue-500/40' : 'bg-slate-900/60 border border-slate-800'
+                    }`}
+                  >
+                    <div className="text-white">{inv.deviceName} ({inv.barcode})</div>
+                    {isSelected && <Check size={13} className="text-blue-400" />}
+                  </div>
+                );
+              })}
+            </div>
+          </FormField>
+
+          <ModalFooter
+            onClose={() => setModalOpen(false)}
+            submitLabel={submitting ? 'Raising...' : 'Create Ticket'}
+            submitting={submitting}
+          />
+        </form>
+      </Modal>
+
+      {/* ===================== RESOLVE TICKET MODAL ===================== */}
+      <Modal
+        open={resolveModalOpen}
+        onClose={() => {
+          setResolveModalOpen(false);
+          handleClearResolvePhoto();
+        }}
+        title="Resolve Ticket • Verified Proof of Work"
+        icon={<CheckCircle2 size={20} className="text-emerald-400" />}
+        maxWidth="max-w-lg"
+      >
+        <form onSubmit={handleResolveSubmit} className="space-y-4">
+          <FormField label="Resolution Summary & Solution Notes">
+            <textarea
+              value={resolveForm.resolutionNote}
+              onChange={(e) => setResolveForm({ ...resolveForm, resolutionNote: e.target.value })}
+              rows={3}
+              placeholder="Explain how the issue was fixed, components replaced, or adjustments made on site..."
+              className={textareaClassName}
+              required
+            />
+          </FormField>
+
+          {/* Proof Photo Attachment */}
+          <FormField label="Resolution Proof Photo (Site Verification)">
+            <input
+              ref={resolvePhotoInputRef}
+              type="file"
+              accept="image/*,.heic,.heif,.dng,.raw,.cr2,.nef,.arw,.tiff,.tif,.bmp"
+              onChange={handleResolvePhotoSelect}
+              className="hidden"
+            />
+
+            {resolvePhotoFile ? (
+              <div className="p-3 rounded-2xl bg-slate-950 border border-emerald-500/40 flex items-center justify-between gap-3">
+                <div className="flex items-center space-x-3 min-w-0">
+                  {resolvePhotoPreview ? (
+                    <img
+                      src={resolvePhotoPreview}
+                      alt="Proof preview"
+                      className="w-12 h-12 rounded-xl object-cover border border-emerald-500/30 shrink-0"
+                    />
+                  ) : (
+                    <div className="w-12 h-12 rounded-xl bg-slate-900 text-emerald-400 flex items-center justify-center shrink-0">
+                      <FileImage size={20} />
+                    </div>
+                  )}
+                  <div className="truncate text-xs">
+                    <p className="font-bold text-white truncate">{resolvePhotoFile.name}</p>
+                    <p className="text-[10px] text-emerald-400 font-mono">
+                      {(resolvePhotoFile.size / (1024 * 1024)).toFixed(2)} MB • Verified Proof Attached
+                    </p>
+                  </div>
+                </div>
                 <button
                   type="button"
-                  onClick={() => setResolveModalOpen(false)}
-                  className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 text-xs font-semibold"
+                  onClick={handleClearResolvePhoto}
+                  className="p-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-rose-400 transition shrink-0"
+                  title="Remove Photo"
                 >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold"
-                >
-                  Confirm Resolution
+                  <X size={16} />
                 </button>
               </div>
-            </form>
+            ) : (
+              <div
+                onClick={() => resolvePhotoInputRef.current?.click()}
+                className="p-4 rounded-2xl bg-slate-950 border border-dashed border-slate-800 hover:border-emerald-500/50 cursor-pointer transition flex flex-col items-center justify-center space-y-1.5 text-center group"
+              >
+                <div className="w-10 h-10 rounded-2xl bg-emerald-500/10 text-emerald-400 flex items-center justify-center group-hover:scale-105 transition">
+                  <Camera size={20} />
+                </div>
+                <div>
+                  <p className="text-xs font-semibold text-white group-hover:text-emerald-400 transition">
+                    Click to attach Proof Photo
+                  </p>
+                  <p className="text-[10px] text-slate-500 mt-0.5">
+                    Supports high-resolution camera captures and RAW formats (up to 50MB)
+                  </p>
+                </div>
+              </div>
+            )}
+          </FormField>
+
+          {/* On-Site Verification Indicator */}
+          <div className="p-3 rounded-2xl bg-slate-950 border border-slate-800 flex items-center justify-between text-xs">
+            <div className="flex items-center space-x-2">
+              <ShieldCheck size={16} className="text-emerald-400" />
+              <div>
+                <p className="font-bold text-white text-[11px]">On-Site Audit Verification</p>
+                <p className="text-[10px] text-slate-400">
+                  {fetchingGps
+                    ? 'Acquiring geolocation tag...'
+                    : gpsCaptured
+                    ? 'GPS location captured for manager verification'
+                    : 'Location verification active'}
+                </p>
+              </div>
+            </div>
+            {fetchingGps && <Loader2 size={13} className="text-blue-400 animate-spin" />}
+          </div>
+
+          <ModalFooter
+            onClose={() => {
+              setResolveModalOpen(false);
+              handleClearResolvePhoto();
+            }}
+            submitLabel={resolving ? 'Verifying & Resolving...' : 'Confirm Resolution'}
+            submitting={resolving}
+            variant="emerald"
+          />
+        </form>
+      </Modal>
+
+      {/* ===================== HIGH-RESOLUTION LIGHTBOX MODAL ===================== */}
+      {previewModalPhoto && (
+        <div
+          className="fixed inset-0 z-[100] bg-black/90 backdrop-blur-sm flex items-center justify-center p-4 sm:p-8"
+          onClick={() => setPreviewModalPhoto(null)}
+        >
+          <div
+            className="relative max-w-4xl max-h-[85vh] w-full flex flex-col items-center justify-center space-y-2.5"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="w-full flex items-center justify-between px-1 text-white">
+              <div className="flex items-center space-x-2 text-xs font-semibold">
+                <FileImage size={15} className="text-blue-400" />
+                <span>Site Photo Inspection</span>
+              </div>
+              <div className="flex items-center space-x-2">
+                <a
+                  href={previewModalPhoto}
+                  download
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold flex items-center space-x-1 transition shadow-md"
+                >
+                  <Download size={12} />
+                  <span>Download Original</span>
+                </a>
+                <button
+                  onClick={() => setPreviewModalPhoto(null)}
+                  className="p-1 rounded-xl bg-slate-800 hover:bg-slate-700 text-white transition"
+                  title="Close"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+            </div>
+
+            <div className="rounded-2xl overflow-hidden border border-slate-800 bg-slate-950 flex items-center justify-center max-h-[75vh] w-full shadow-2xl">
+              <img
+                src={previewModalPhoto}
+                alt="Ticket attachment preview"
+                className="max-h-[72vh] max-w-full object-contain"
+              />
+            </div>
           </div>
         </div>
       )}

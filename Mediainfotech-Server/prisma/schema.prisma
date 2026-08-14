@@ -76,6 +76,9 @@ model User {
 
   // Tickets
   createdTickets    Ticket[]            @relation("ticketCreator")
+  assignedTickets   Ticket[]            @relation("assignedTicketUser")
+  resolvedTickets   Ticket[]            @relation("resolvedTicketUser")
+  ticketComments    TicketComment[]     @relation("ticketCommentAuthor")
 }
 
 model Permission {
@@ -598,10 +601,15 @@ model Ticket {
   description     String
   priority        TicketPriority @default(MEDIUM)
   status          TicketStatus   @default(OPEN)
+  dueDate         DateTime?
 
   // Creator
   createdById     String
   createdBy       User           @relation("ticketCreator", fields: [createdById], references: [id])
+
+  // Assigned Direct Technician / Lead
+  assignedUserId  String?
+  assignedUser    User?          @relation("assignedTicketUser", fields: [assignedUserId], references: [id], onDelete: SetNull)
 
   // Assigned Group
   assignedGroupId String?
@@ -618,9 +626,32 @@ model Ticket {
   // Assigned Inventory Devices
   inventoryItems  TicketInventoryItem[]
 
-  // Resolution Notes
-  resolutionNote String?
+  // Resolution Notes, Proof of Work & Geolocation Audit Log
+  resolutionNote  String?
+  proofPhoto      String?
+  resolveLat      Float?
+  resolveLng      Float?
+  resolveAddress  String?
+  resolveAccuracy Float?
+  resolvedAt      DateTime?
+  resolvedById    String?
+  resolvedBy      User?          @relation("resolvedTicketUser", fields: [resolvedById], references: [id], onDelete: SetNull)
+
+  // Discussion & Activity Comments
+  comments        TicketComment[]
 
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
 }
+
+model TicketComment {
+  id        String   @id @default(cuid())
+  ticketId  String
+  ticket    Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  authorId  String
+  author    User     @relation("ticketCommentAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  content   String
+  photo     String?
+  createdAt DateTime @default(now())
+}
+

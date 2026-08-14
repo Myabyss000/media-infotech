@@ -19,7 +19,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   if (loading || !user) {
     return (
-      <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center">
+      <div className="h-screen w-screen bg-slate-950 text-slate-100 flex items-center justify-center">
         <div className="flex flex-col items-center space-y-4">
           <div className="w-12 h-12 rounded-full border-4 border-blue-500 border-t-transparent animate-spin" />
           <p className="text-xs text-slate-400 font-mono">
@@ -31,11 +31,14 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex overflow-hidden">
+    <div className="h-screen w-screen overflow-hidden bg-slate-950 text-slate-100 flex">
+      {/* Sidebar remains permanently pinned and fixed on the left */}
       <Sidebar collapsed={collapsed} setCollapsed={setCollapsed} />
-      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+
+      {/* Main content wrapper */}
+      <div className="flex-1 flex flex-col min-w-0 h-screen overflow-hidden">
         <Header />
-        <main className="flex-1 overflow-y-auto p-6 bg-gradient-to-b from-slate-950 via-slate-900/40 to-slate-950">
+        <main className="flex-1 overflow-y-auto p-6 bg-gradient-to-b from-slate-950 via-slate-900/40 to-slate-950 scroll-smooth">
           {children}
         </main>
       </div>

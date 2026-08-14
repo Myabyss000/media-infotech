@@ -417,7 +417,7 @@ export default function GroupsPage() {
 
   const handleAddMember = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!manageGroup || !addMemberUserId) return;
+    if (!canManageGroupMembers || !manageGroup || !addMemberUserId) return;
     try {
       await api.post(`/api/groups/${manageGroup.id}/members`, {
         userId: addMemberUserId,
@@ -432,6 +432,7 @@ export default function GroupsPage() {
   };
 
   const handleRemoveMember = async (groupId: string, userId: string) => {
+    if (!canManageGroupMembers) return;
     try {
       await api.delete(`/api/groups/${groupId}/members/${userId}`);
       if (manageGroup && manageGroup.id === groupId) {
@@ -700,13 +701,15 @@ export default function GroupsPage() {
                           <MapPin size={14} />
                         </button>
                       )}
-                      <button
-                        onClick={() => setManageGroup(g)}
-                        className="px-2.5 py-1.5 rounded-xl bg-slate-800 text-slate-300 hover:text-white font-semibold transition"
-                        title="Manage Roster"
-                      >
-                        <UserPlus size={13} />
-                      </button>
+                      {canManageGroupMembers && (
+                        <button
+                          onClick={() => setManageGroup(g)}
+                          className="px-2.5 py-1.5 rounded-xl bg-slate-800 text-slate-300 hover:text-white font-semibold transition"
+                          title="Manage Roster"
+                        >
+                          <UserPlus size={13} />
+                        </button>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -1318,32 +1321,38 @@ export default function GroupsPage() {
       >
         {manageGroup && (
           <div className="space-y-4">
-            <p className="text-xs text-slate-400 -mt-2">Add or remove technicians from this group.</p>
+            <p className="text-xs text-slate-400 -mt-2">
+              {canManageGroupMembers
+                ? 'Add or remove technicians from this group.'
+                : 'Technicians assigned to this CCTV group.'}
+            </p>
 
-            {/* Add User to Group Form */}
-            <form onSubmit={handleAddMember} className="flex items-center space-x-2">
-              <select
-                value={addMemberUserId}
-                onChange={(e) => setAddMemberUserId(e.target.value)}
-                className={`flex-1 ${inputClassName}`}
-                required
-              >
-                <option value="">Select Technician to Add...</option>
-                {usersList
-                  .filter((u) => !manageGroup.members?.some((m: any) => m.userId === u.id))
-                  .map((u) => (
-                    <option key={u.id} value={u.id}>
-                      {u.firstName} {u.lastName} (@{u.username})
-                    </option>
-                  ))}
-              </select>
-              <button
-                type="submit"
-                className="px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold transition shrink-0"
-              >
-                Add User
-              </button>
-            </form>
+            {/* Add User to Group Form - Admins/Managers/HR only */}
+            {canManageGroupMembers && (
+              <form onSubmit={handleAddMember} className="flex items-center space-x-2">
+                <select
+                  value={addMemberUserId}
+                  onChange={(e) => setAddMemberUserId(e.target.value)}
+                  className={`flex-1 ${inputClassName}`}
+                  required
+                >
+                  <option value="">Select Technician to Add...</option>
+                  {usersList
+                    .filter((u) => !manageGroup.members?.some((m: any) => m.userId === u.id))
+                    .map((u) => (
+                      <option key={u.id} value={u.id}>
+                        {u.firstName} {u.lastName} (@{u.username})
+                      </option>
+                    ))}
+                </select>
+                <button
+                  type="submit"
+                  className="px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold transition shrink-0"
+                >
+                  Add User
+                </button>
+              </form>
+            )}
 
             {/* Group Members List */}
             <div className="space-y-2 max-h-60 overflow-y-auto">
@@ -1368,13 +1377,15 @@ export default function GroupsPage() {
                       </div>
                     </div>
 
-                    <button
-                      onClick={() => handleRemoveMember(manageGroup.id, m.userId)}
-                      className="p-1.5 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 transition"
-                      title="Remove User from Group"
-                    >
-                      <Trash2 size={14} />
-                    </button>
+                    {canManageGroupMembers && (
+                      <button
+                        onClick={() => handleRemoveMember(manageGroup.id, m.userId)}
+                        className="p-1.5 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 transition"
+                        title="Remove User from Group"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    )}
                   </div>
                 ))
               )}

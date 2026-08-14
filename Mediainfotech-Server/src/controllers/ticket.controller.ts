@@ -5,10 +5,14 @@ import { TicketPriority, TicketStatus, InventoryStatus } from '@prisma/client';
 
 export const getTickets = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
+    const userId = req.user?.id;
+    const userRole = req.user?.role;
+
     const {
       status,
       priority,
       assignedGroupId,
+      assignedUserId,
       clientId,
       vehicleId,
       search,
@@ -16,28 +20,48 @@ export const getTickets = async (req: AuthenticatedRequest, res: Response): Prom
       startDate,
       endDate,
       page = '1',
-      limit = '15',
+      limit = '50',
     } = req.query;
 
     const pageNum = parseInt(page as string, 10);
     const limitNum = parseInt(limit as string, 10);
 
     const where: any = {};
-    if (status) where.status = status as TicketStatus;
-    if (priority) where.priority = priority as TicketPriority;
-    if (assignedGroupId) where.assignedGroupId = assignedGroupId as string;
+    if (status && status !== 'ALL') where.status = status as TicketStatus;
+    if (priority && priority !== 'ALL') where.priority = priority as TicketPriority;
+    if (assignedGroupId && assignedGroupId !== 'ALL') where.assignedGroupId = assignedGroupId as string;
+    if (assignedUserId && assignedUserId !== 'ALL') where.assignedUserId = assignedUserId as string;
     if (clientId) where.clientId = clientId as string;
     if (vehicleId) where.vehicleId = vehicleId as string;
 
-    if (search) {
+    if (userRole !== 'ADMIN' && userRole !== 'MANAGER' && userRole !== 'HR') {
       where.OR = [
-        { ticketNumber: { contains: search as string, mode: 'insensitive' } },
-        { title: { contains: search as string, mode: 'insensitive' } },
-        { description: { contains: search as string, mode: 'insensitive' } },
+        { assignedUserId: userId },
+        { assignedGroup: { members: { some: { userId } } } },
+        { createdById: userId },
       ];
     }
 
-    // Time Range & Date Filter
+    if (search) {
+      const searchConditions = [
+        { ticketNumber: { contains: search as string, mode: 'insensitive' } },
+        { title: { contains: search as string, mode: 'insensitive' } },
+        { description: { contains: search as string, mode: 'insensitive' } },
+        { client: { name: { contains: search as string, mode: 'insensitive' } } },
+        { client: { companyName: { contains: search as string, mode: 'insensitive' } } },
+      ];
+
+      if (where.OR) {
+        where.AND = [
+          { OR: where.OR },
+          { OR: searchConditions },
+        ];
+        delete where.OR;
+      } else {
+        where.OR = searchConditions;
+      }
+    }
+
     if (timeRange || (startDate && endDate)) {
       const now = new Date();
       let start: Date | null = null;
@@ -74,19 +98,41 @@ export const getTickets = async (req: AuthenticatedRequest, res: Response): Prom
       prisma.ticket.findMany({
         where,
         include: {
-          createdBy: { select: { id: true, firstName: true, lastName: true, role: true } },
-          assignedGroup: { select: { id: true, name: true, color: true } },
-          client: { select: { id: true, name: true, companyName: true, phone: true } },
+          createdBy: { select: { id: true, firstName: true, lastName: true, role: true, avatar: true } },
+          assignedUser: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, avatar: true, designation: true } },
+          resolvedBy: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, avatar: true, role: true, designation: true } },
+          assignedGroup: {
+            select: {
+              id: true,
+              name: true,
+              color: true,
+              locationName: true,
+              locationAddress: true,
+              members: {
+                select: {
+                  user: { select: { id: true, firstName: true, lastName: true, avatar: true } },
+                },
+              },
+            },
+          },
+          client: { select: { id: true, name: true, companyName: true, phone: true, address: true, city: true } },
           vehicle: { select: { id: true, registrationNo: true, make: true, model: true, type: true } },
           inventoryItems: {
             include: {
               inventoryItem: { select: { id: true, deviceName: true, barcode: true, category: true, condition: true, status: true } },
             },
           },
+          comments: {
+            include: {
+              author: { select: { id: true, firstName: true, lastName: true, avatar: true, role: true } },
+            },
+            orderBy: { createdAt: 'asc' },
+          },
+          _count: { select: { comments: true, inventoryItems: true } },
         },
         skip: (pageNum - 1) * limitNum,
         take: limitNum,
-        orderBy: { createdAt: 'desc' },
+        orderBy: [{ priority: 'desc' }, { createdAt: 'desc' }],
       }),
       prisma.ticket.count({ where }),
       prisma.ticket.groupBy({
@@ -104,11 +150,22 @@ export const getTickets = async (req: AuthenticatedRequest, res: Response): Prom
     };
 
     counts.forEach((c) => {
-      statusCounts[c.status] = c._count.status;
+      statusCounts[c.status as keyof typeof statusCounts] = c._count.status;
+    });
+
+    const isManagerOrAdmin = userRole === 'ADMIN' || userRole === 'MANAGER' || userRole === 'HR';
+
+    // Non-managers/employees cannot see GPS coordinates
+    const sanitizedTickets = tickets.map((t) => {
+      if (!isManagerOrAdmin) {
+        const { resolveLat, resolveLng, resolveAddress, resolveAccuracy, ...rest } = t;
+        return rest;
+      }
+      return t;
     });
 
     res.json({
-      data: tickets,
+      data: sanitizedTickets,
       meta: {
         total,
         page: pageNum,
@@ -126,14 +183,20 @@ export const getTickets = async (req: AuthenticatedRequest, res: Response): Prom
 export const getTicketById = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const id = req.params.id as string;
+    const userId = req.user?.id;
+    const userRole = req.user?.role;
+    const isManagerOrAdmin = userRole === 'ADMIN' || userRole === 'MANAGER' || userRole === 'HR';
+
     const ticket = await prisma.ticket.findUnique({
       where: { id },
       include: {
-        createdBy: { select: { id: true, firstName: true, lastName: true, email: true, role: true } },
+        createdBy: { select: { id: true, firstName: true, lastName: true, email: true, role: true, avatar: true } },
+        assignedUser: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, avatar: true, designation: true } },
+        resolvedBy: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, avatar: true, role: true, designation: true } },
         assignedGroup: {
           include: {
             members: {
-              include: { user: { select: { id: true, firstName: true, lastName: true, phone: true } } },
+              include: { user: { select: { id: true, firstName: true, lastName: true, phone: true, avatar: true } } },
             },
           },
         },
@@ -144,6 +207,12 @@ export const getTicketById = async (req: AuthenticatedRequest, res: Response): P
             inventoryItem: true,
           },
         },
+        comments: {
+          include: {
+            author: { select: { id: true, firstName: true, lastName: true, avatar: true, role: true } },
+          },
+          orderBy: { createdAt: 'asc' },
+        },
       },
     });
 
@@ -152,15 +221,43 @@ export const getTicketById = async (req: AuthenticatedRequest, res: Response): P
       return;
     }
 
+    // Access control check: If non-admin/manager, verify membership/assignment
+    if (!isManagerOrAdmin) {
+      const isAssignedUser = ticket.assignedUserId === userId;
+      const isCreator = ticket.createdById === userId;
+      const isGroupMember = ticket.assignedGroup?.members.some((m: any) => m.userId === userId);
+      if (!isAssignedUser && !isCreator && !isGroupMember) {
+        res.status(403).json({ error: 'Access denied: You are not assigned to this ticket.' });
+        return;
+      }
+
+      // Hide GPS audit log from employees
+      const { resolveLat, resolveLng, resolveAddress, resolveAccuracy, ...rest } = ticket;
+      res.json(rest);
+      return;
+    }
+
     res.json(ticket);
   } catch (error) {
+    console.error('getTicketById error:', error);
     res.status(500).json({ error: 'Failed to fetch ticket details' });
   }
 };
 
 export const createTicket = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
-    const { title, description, priority, assignedGroupId, clientId, vehicleId, inventoryItemIds } = req.body;
+    const {
+      title,
+      description,
+      priority,
+      dueDate,
+      assignedGroupId,
+      assignedUserId,
+      clientId,
+      vehicleId,
+      inventoryItemIds,
+      proofPhoto,
+    } = req.body;
     const userId = req.user?.id;
 
     if (!title || !description || !userId) {
@@ -181,10 +278,13 @@ export const createTicket = async (req: AuthenticatedRequest, res: Response): Pr
         description,
         priority: (priority as TicketPriority) || TicketPriority.MEDIUM,
         status: TicketStatus.OPEN,
+        dueDate: dueDate ? new Date(dueDate) : null,
         createdById: userId,
         assignedGroupId: assignedGroupId || null,
+        assignedUserId: assignedUserId || null,
         clientId: clientId || null,
         vehicleId: vehicleId || null,
+        proofPhoto: proofPhoto || null,
         inventoryItems: {
           create: itemIdsToAttach.map((itemId: string) => ({
             inventoryItemId: itemId,
@@ -194,6 +294,7 @@ export const createTicket = async (req: AuthenticatedRequest, res: Response): Pr
       },
       include: {
         createdBy: { select: { id: true, firstName: true, lastName: true } },
+        assignedUser: { select: { id: true, firstName: true, lastName: true } },
         assignedGroup: { select: { id: true, name: true } },
         client: { select: { id: true, name: true, companyName: true } },
         vehicle: { select: { id: true, registrationNo: true } },
@@ -219,17 +320,68 @@ export const createTicket = async (req: AuthenticatedRequest, res: Response): Pr
 export const updateTicketStatus = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const id = req.params.id as string;
-    const { status, resolutionNote, inventoryItemIds } = req.body;
+    const {
+      status,
+      resolutionNote,
+      resolveLat,
+      resolveLng,
+      resolveAddress,
+      resolveAccuracy,
+      inventoryItemIds,
+    } = req.body;
 
     if (!status || !Object.values(TicketStatus).includes(status)) {
       res.status(400).json({ error: 'Valid status is required' });
       return;
     }
 
-    const itemIdsToAttach: string[] = Array.isArray(inventoryItemIds) ? inventoryItemIds : [];
+    const userRole = req.user?.role;
+    const isManagerOrAdmin = userRole === 'ADMIN' || userRole === 'MANAGER' || userRole === 'HR';
+
+    const currentTicket = await prisma.ticket.findUnique({
+      where: { id },
+      select: { status: true },
+    });
+
+    if (!currentTicket) {
+      res.status(404).json({ error: 'Ticket not found' });
+      return;
+    }
+
+    const currentStatus = currentTicket.status;
+
+    // Strict Status Rules:
+    // - Employees can ONLY move forward: OPEN -> IN_PROGRESS or IN_PROGRESS -> RESOLVED
+    // - Only Product Managers and Admins can reverse or close tickets
+    if (!isManagerOrAdmin) {
+      const isForwardOpenToProgress = currentStatus === 'OPEN' && status === 'IN_PROGRESS';
+      const isForwardProgressToResolved = currentStatus === 'IN_PROGRESS' && status === 'RESOLVED';
+
+      if (!isForwardOpenToProgress && !isForwardProgressToResolved) {
+        res.status(403).json({
+          error: 'Permission denied: Employees can only move tickets from Open to In Progress, or In Progress to Resolved. Only Product Managers and Admins can reverse or close tickets.',
+        });
+        return;
+      }
+    }
+
+    let photoUrl = req.body.proofPhoto;
+    if (req.file) {
+      photoUrl = `/uploads/ticket-photos/${req.file.filename}`;
+    }
+
+    let itemIdsToAttach: string[] = [];
+    if (Array.isArray(inventoryItemIds)) {
+      itemIdsToAttach = inventoryItemIds;
+    } else if (typeof inventoryItemIds === 'string') {
+      try {
+        itemIdsToAttach = JSON.parse(inventoryItemIds);
+      } catch {
+        itemIdsToAttach = inventoryItemIds ? [inventoryItemIds] : [];
+      }
+    }
 
     if (itemIdsToAttach.length > 0) {
-      // Connect new inventory items used during resolution/solution
       for (const itemId of itemIdsToAttach) {
         await prisma.ticketInventoryItem.upsert({
           where: { ticketId_inventoryItemId: { ticketId: id, inventoryItemId: itemId } },
@@ -244,14 +396,41 @@ export const updateTicketStatus = async (req: AuthenticatedRequest, res: Respons
       });
     }
 
+    const updateData: any = {
+      status: status as TicketStatus,
+    };
+
+    if (resolutionNote !== undefined) {
+      updateData.resolutionNote = resolutionNote;
+    }
+    if (photoUrl !== undefined) {
+      updateData.proofPhoto = photoUrl;
+    }
+
+    if (status === 'RESOLVED') {
+      updateData.resolvedAt = new Date();
+      updateData.resolvedById = req.user?.id;
+      if (resolveLat !== undefined && resolveLat !== null && resolveLat !== '') {
+        updateData.resolveLat = parseFloat(resolveLat);
+      }
+      if (resolveLng !== undefined && resolveLng !== null && resolveLng !== '') {
+        updateData.resolveLng = parseFloat(resolveLng);
+      }
+      if (resolveAddress) {
+        updateData.resolveAddress = resolveAddress;
+      }
+      if (resolveAccuracy !== undefined && resolveAccuracy !== null && resolveAccuracy !== '') {
+        updateData.resolveAccuracy = parseFloat(resolveAccuracy);
+      }
+    }
+
     const ticket = await prisma.ticket.update({
       where: { id },
-      data: {
-        status: status as TicketStatus,
-        ...(resolutionNote !== undefined && { resolutionNote }),
-      },
+      data: updateData,
       include: {
-        createdBy: { select: { id: true, firstName: true, lastName: true } },
+        createdBy: { select: { id: true, firstName: true, lastName: true, avatar: true } },
+        assignedUser: { select: { id: true, firstName: true, lastName: true, avatar: true } },
+        resolvedBy: { select: { id: true, firstName: true, lastName: true, avatar: true, role: true, designation: true } },
         assignedGroup: { select: { id: true, name: true } },
         inventoryItems: { include: { inventoryItem: true } },
       },
@@ -259,6 +438,7 @@ export const updateTicketStatus = async (req: AuthenticatedRequest, res: Respons
 
     res.json({ message: `Ticket status updated to ${status}`, data: ticket });
   } catch (error) {
+    console.error('updateTicketStatus error:', error);
     res.status(500).json({ error: 'Failed to update ticket status' });
   }
 };
@@ -266,7 +446,18 @@ export const updateTicketStatus = async (req: AuthenticatedRequest, res: Respons
 export const updateTicket = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const id = req.params.id as string;
-    const { title, description, priority, assignedGroupId, clientId, vehicleId, resolutionNote } = req.body;
+    const {
+      title,
+      description,
+      priority,
+      dueDate,
+      assignedGroupId,
+      assignedUserId,
+      clientId,
+      vehicleId,
+      resolutionNote,
+      proofPhoto,
+    } = req.body;
 
     const ticket = await prisma.ticket.update({
       where: { id },
@@ -274,25 +465,119 @@ export const updateTicket = async (req: AuthenticatedRequest, res: Response): Pr
         ...(title && { title }),
         ...(description && { description }),
         ...(priority && { priority: priority as TicketPriority }),
-        ...(assignedGroupId !== undefined && { assignedGroupId }),
-        ...(clientId !== undefined && { clientId }),
-        ...(vehicleId !== undefined && { vehicleId }),
+        ...(dueDate !== undefined && { dueDate: dueDate ? new Date(dueDate) : null }),
+        ...(assignedGroupId !== undefined && { assignedGroupId: assignedGroupId || null }),
+        ...(assignedUserId !== undefined && { assignedUserId: assignedUserId || null }),
+        ...(clientId !== undefined && { clientId: clientId || null }),
+        ...(vehicleId !== undefined && { vehicleId: vehicleId || null }),
         ...(resolutionNote !== undefined && { resolutionNote }),
+        ...(proofPhoto !== undefined && { proofPhoto }),
+      },
+      include: {
+        createdBy: { select: { id: true, firstName: true, lastName: true } },
+        assignedUser: { select: { id: true, firstName: true, lastName: true } },
+        assignedGroup: { select: { id: true, name: true } },
+        client: { select: { id: true, name: true, companyName: true } },
+        vehicle: { select: { id: true, registrationNo: true } },
       },
     });
 
     res.json(ticket);
   } catch (error) {
+    console.error('updateTicket error:', error);
     res.status(500).json({ error: 'Failed to update ticket' });
   }
 };
 
 export const deleteTicket = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
+    const userRole = req.user?.role;
+    if (userRole !== 'ADMIN') {
+      res.status(403).json({ error: 'Access denied: Only System Admins can delete tickets.' });
+      return;
+    }
+
     const id = req.params.id as string;
     await prisma.ticket.delete({ where: { id } });
     res.json({ message: 'Ticket deleted successfully' });
   } catch (error) {
+    console.error('deleteTicket error:', error);
     res.status(500).json({ error: 'Failed to delete ticket' });
+  }
+};
+
+export const addTicketComment = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const ticketId = req.params.id as string;
+    const { content } = req.body;
+    const authorId = req.user?.id;
+
+    let photoUrl: string | null = null;
+    if (req.file) {
+      photoUrl = `/uploads/ticket-photos/${req.file.filename}`;
+    } else if (req.body.photo) {
+      photoUrl = req.body.photo;
+    }
+
+    const trimmedContent = content ? content.trim() : '';
+
+    if (!trimmedContent && !photoUrl) {
+      res.status(400).json({ error: 'Comment message or photo is required' });
+      return;
+    }
+
+    if (!authorId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const comment = await prisma.ticketComment.create({
+      data: {
+        ticketId,
+        authorId,
+        content: trimmedContent || (photoUrl ? 'Attached photo' : ''),
+        photo: photoUrl,
+      },
+      include: {
+        author: { select: { id: true, firstName: true, lastName: true, avatar: true, role: true } },
+      },
+    });
+
+    res.status(201).json(comment);
+  } catch (error) {
+    console.error('addTicketComment error:', error);
+    res.status(500).json({ error: 'Failed to add comment' });
+  }
+};
+
+export const deleteTicketComment = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const commentId = req.params.commentId as string;
+    const userId = req.user?.id;
+    const userRole = req.user?.role;
+
+    const comment = await prisma.ticketComment.findUnique({
+      where: { id: commentId },
+    });
+
+    if (!comment) {
+      res.status(404).json({ error: 'Comment not found' });
+      return;
+    }
+
+    // Only author or admin/manager can delete
+    if (comment.authorId !== userId && userRole !== 'ADMIN' && userRole !== 'MANAGER') {
+      res.status(403).json({ error: 'Access denied to delete this comment' });
+      return;
+    }
+
+    await prisma.ticketComment.delete({
+      where: { id: commentId },
+    });
+
+    res.json({ message: 'Comment deleted successfully' });
+  } catch (error) {
+    console.error('deleteTicketComment error:', error);
+    res.status(500).json({ error: 'Failed to delete comment' });
   }
 };
