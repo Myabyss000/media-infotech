@@ -1,7 +1,6 @@
 'use client';
 
 import React, { useEffect, useState, useRef } from 'react';
-import { api } from '@/lib/api';
 import { useAuth } from '@/contexts/auth-context';
 import {
   Ticket as TicketIcon,
@@ -31,23 +30,42 @@ import {
   Loader2,
   Lock,
   ArrowRight,
-  Filter,
+  Phone,
+  Mail,
+  Truck,
+  Calendar,
+  AlertCircle,
+  Hash,
+  Reply,
+  CornerDownRight,
+  Video,
+  RefreshCw,
+  Upload,
+  Image as ImageIcon,
+  Wrench,
 } from 'lucide-react';
 import { formatDateTime } from '@/lib/utils';
 import { Modal, ModalFooter } from '@/components/ui/Modal';
 import { FormField, inputClassName, textareaClassName } from '@/components/ui/FormField';
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
+import { api, getApiBaseUrl } from '@/lib/api';
+import { getGpsFromImageFile } from '@/lib/exif';
+import { TicketConsumeEquipmentModal } from '@/components/tickets/TicketConsumeEquipmentModal';
+import { RetrieveAndReplaceModal } from '@/components/inventory/RetrieveAndReplaceModal';
 
 export default function TicketsPage() {
+  const API_BASE_URL = getApiBaseUrl();
   const { user, hasPermission, hasRole } = useAuth();
-  const canManageTickets = hasRole('ADMIN', 'MANAGER', 'HR') || hasPermission('tickets', 'create');
-  const isManagerOrAdmin = hasRole('ADMIN', 'MANAGER', 'HR');
-  const isAdmin = hasRole('ADMIN') || user?.role === 'ADMIN';
+  const userRole = (user?.role || '').toUpperCase();
+  const isManagerOrAdmin =
+    hasRole('ADMIN', 'MANAGER', 'HR') ||
+    userRole === 'ADMIN' ||
+    userRole === 'MANAGER' ||
+    userRole === 'HR';
+  const isAdmin = hasRole('ADMIN') || userRole === 'ADMIN';
+  const canManageTickets = isManagerOrAdmin || hasPermission('tickets', 'create');
 
   const [tickets, setTickets] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  // Default to List view (Option 1)
   const [viewMode, setViewMode] = useState<'list' | 'kanban'>('list');
 
   const [statusCounts, setStatusCounts] = useState({
@@ -79,6 +97,7 @@ export default function TicketsPage() {
   const [resolveModalOpen, setResolveModalOpen] = useState(false);
   const [ticketToResolve, setTicketToResolve] = useState<any | null>(null);
   const [activeTicketDrawer, setActiveTicketDrawer] = useState<any | null>(null);
+  const [consumeModalOpen, setConsumeModalOpen] = useState(false);
 
   // Form State for Ticket Creation
   const [form, setForm] = useState({
@@ -112,15 +131,56 @@ export default function TicketsPage() {
   const [fetchingGps, setFetchingGps] = useState(false);
   const [gpsCaptured, setGpsCaptured] = useState(false);
 
-  // Comment & Discussion Photo Upload State
+  // Comment & Discussion Photo Upload & Live Camera State
   const [commentText, setCommentText] = useState('');
+  const [replyingTo, setReplyingTo] = useState<any | null>(null);
   const [selectedPhotoFile, setSelectedPhotoFile] = useState<File | null>(null);
   const [photoPreviewUrl, setPhotoPreviewUrl] = useState<string | null>(null);
+  const [photoChoiceOpen, setPhotoChoiceOpen] = useState(false);
+  const [cameraModalOpen, setCameraModalOpen] = useState(false);
+  const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
+  const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment');
+  const [cameraLoading, setCameraLoading] = useState(false);
+  const [commentGpsLocation, setCommentGpsLocation] = useState<{
+    lat: number;
+    lng: number;
+    accuracy: number;
+    address?: string;
+  } | null>(null);
+  const [fetchingCommentGps, setFetchingCommentGps] = useState(false);
+
   const photoInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
+  const commentInputRef = useRef<HTMLInputElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
   const [previewModalPhoto, setPreviewModalPhoto] = useState<string | null>(null);
   const [submittingComment, setSubmittingComment] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [resolving, setResolving] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [drawerRefreshing, setDrawerRefreshing] = useState(false);
+
+  // Field Product Retrieval & Preselected Install States
+  const [selectedRetrieveItem, setSelectedRetrieveItem] = useState<any | null>(null);
+  const [retrieveModalOpen, setRetrieveModalOpen] = useState(false);
+  const [selectedPreinstalledItem, setSelectedPreinstalledItem] = useState<any | null>(null);
+
+  const handleMarkItemForReturn = async (itemId: string, itemName: string) => {
+    if (!activeTicketDrawer) return;
+    if (!confirm(`Mark "${itemName}" as uninstalled leftover to be returned to warehouse?`)) return;
+    try {
+      await api.post(`/api/tickets/${activeTicketDrawer.id}/inventory/${itemId}/mark-return`, {
+        condition: 'GOOD',
+        notes: 'Uninstalled leftover from field run',
+      });
+      await Promise.all([handleRefreshActiveTicket(), fetchTickets()]);
+    } catch (err: any) {
+      console.error('Failed to mark item for return:', err);
+      alert(err?.response?.data?.error || 'Failed to mark item for return');
+    }
+  };
 
   useEffect(() => {
     fetchAuxiliaryData();
@@ -146,6 +206,31 @@ export default function TicketsPage() {
       setUsersList(uRes.data?.data || uRes.data || []);
     } catch (e) {
       console.error('Failed to load auxiliary options', e);
+    }
+  };
+
+  const handleManualRefresh = async () => {
+    try {
+      setRefreshing(true);
+      await Promise.all([fetchTickets(), fetchAuxiliaryData()]);
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  const handleRefreshActiveTicket = async () => {
+    if (!activeTicketDrawer?.id) return;
+    try {
+      setDrawerRefreshing(true);
+      const res = await api.get(`/api/tickets/${activeTicketDrawer.id}`);
+      if (res.data) {
+        setActiveTicketDrawer(res.data);
+      }
+      fetchTickets();
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setDrawerRefreshing(false);
     }
   };
 
@@ -224,6 +309,19 @@ export default function TicketsPage() {
     );
   };
 
+  const handleOpenTicketDetails = async (t: any) => {
+    setActiveTicketDrawer(t);
+    captureCommentGps();
+    try {
+      const res = await api.get(`/api/tickets/${t.id}`);
+      if (res.data) {
+        setActiveTicketDrawer(res.data);
+      }
+    } catch (err) {
+      // Keep initial ticket state if fetch fails
+    }
+  };
+
   const handleOpenResolveModal = (t: any) => {
     setTicketToResolve(t);
     setResolveForm({
@@ -235,6 +333,24 @@ export default function TicketsPage() {
     setGpsCaptured(false);
     setResolveModalOpen(true);
     captureResolutionGps();
+  };
+
+  const handleGroupSelect = (selectedGroupId: string) => {
+    if (selectedGroupId) {
+      const groupEquipment = inventoryList.filter((inv) => inv.assignedGroupId === selectedGroupId);
+      const groupEquipmentIds = groupEquipment.map((inv) => inv.id);
+      setForm((prev) => ({
+        ...prev,
+        assignedGroupId: selectedGroupId,
+        inventoryItemIds: groupEquipmentIds,
+      }));
+    } else {
+      setForm((prev) => ({
+        ...prev,
+        assignedGroupId: '',
+        inventoryItemIds: [],
+      }));
+    }
   };
 
   const handleCreateTicket = async (e: React.FormEvent) => {
@@ -389,7 +505,156 @@ export default function TicketsPage() {
     }
   };
 
-  const handlePhotoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const captureCommentGps = () => {
+    if (typeof window !== 'undefined' && 'geolocation' in navigator) {
+      setFetchingCommentGps(true);
+      navigator.geolocation.getCurrentPosition(
+        async (pos) => {
+          const { latitude: lat, longitude: lng, accuracy } = pos.coords;
+          let address = '';
+          try {
+            const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1`, {
+              headers: { 'Accept-Language': 'en' },
+            });
+            const data = await res.json();
+            address = data.display_name || '';
+          } catch (e) {
+            // fallback
+          }
+          setCommentGpsLocation({ lat, lng, accuracy: Math.round(accuracy), address });
+          setFetchingCommentGps(false);
+        },
+        () => {
+          setFetchingCommentGps(false);
+        },
+        { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 }
+      );
+    }
+  };
+
+  const getInstantGps = async (): Promise<{ lat: number; lng: number; accuracy: number; address?: string } | null> => {
+    if (commentGpsLocation?.lat && commentGpsLocation?.lng) {
+      return commentGpsLocation;
+    }
+    if (typeof window === 'undefined' || !('geolocation' in navigator)) {
+      return null;
+    }
+
+    return new Promise((resolve) => {
+      navigator.geolocation.getCurrentPosition(
+        async (pos) => {
+          const { latitude: lat, longitude: lng, accuracy } = pos.coords;
+          let address = '';
+          try {
+            const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1`, {
+              headers: { 'Accept-Language': 'en' },
+            });
+            const data = await res.json();
+            address = data.display_name || '';
+          } catch (e) {}
+          const loc = { lat, lng, accuracy: Math.round(accuracy), address };
+          setCommentGpsLocation(loc);
+          resolve(loc);
+        },
+        () => resolve(null),
+        { enableHighAccuracy: true, timeout: 4000, maximumAge: 60000 }
+      );
+    });
+  };
+
+  const startCamera = async (mode: 'environment' | 'user' = 'environment') => {
+    setPhotoChoiceOpen(false);
+    captureCommentGps();
+
+    // Check if WebRTC getUserMedia is available in current browser context (requires localhost or HTTPS)
+    if (
+      typeof navigator === 'undefined' ||
+      !navigator.mediaDevices ||
+      !navigator.mediaDevices.getUserMedia
+    ) {
+      // In insecure contexts like HTTP LAN (192.168.x.x), directly trigger native mobile camera
+      if (cameraInputRef.current) {
+        cameraInputRef.current.click();
+      } else {
+        photoInputRef.current?.click();
+      }
+      return;
+    }
+
+    setCameraLoading(true);
+    setCameraModalOpen(true);
+    setFacingMode(mode);
+
+    if (cameraStream) {
+      cameraStream.getTracks().forEach((t) => t.stop());
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: mode },
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+        },
+        audio: false,
+      });
+      setCameraStream(stream);
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.play();
+      }
+    } catch (err: any) {
+      console.warn('Live viewfinder unavailable, falling back to native camera app:', err);
+      setCameraModalOpen(false);
+      if (cameraInputRef.current) {
+        cameraInputRef.current.click();
+      } else {
+        photoInputRef.current?.click();
+      }
+    } finally {
+      setCameraLoading(false);
+    }
+  };
+
+  const stopCamera = () => {
+    if (cameraStream) {
+      cameraStream.getTracks().forEach((t) => t.stop());
+      setCameraStream(null);
+    }
+    setCameraModalOpen(false);
+  };
+
+  const toggleFacingMode = () => {
+    const nextMode = facingMode === 'environment' ? 'user' : 'environment';
+    startCamera(nextMode);
+  };
+
+  const handleTakeSnapshot = () => {
+    if (!videoRef.current || !canvasRef.current) return;
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    canvas.width = video.videoWidth || 1280;
+    canvas.height = video.videoHeight || 720;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    canvas.toBlob(
+      (blob) => {
+        if (blob) {
+          const fileName = `live-camera-${Date.now()}.jpg`;
+          const file = new File([blob], fileName, { type: 'image/jpeg' });
+          setSelectedPhotoFile(file);
+          setPhotoPreviewUrl(URL.createObjectURL(file));
+          stopCamera();
+        }
+      },
+      'image/jpeg',
+      0.92
+    );
+  };
+
+  const handlePhotoSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
@@ -404,10 +669,41 @@ export default function TicketsPage() {
     } else {
       setPhotoPreviewUrl(null);
     }
+    setPhotoChoiceOpen(false);
+
+    // 1. Try reading pinpoint GPS directly from photo's EXIF metadata
+    setFetchingCommentGps(true);
+    try {
+      const exifCoords = await getGpsFromImageFile(file);
+      if (exifCoords?.lat && exifCoords?.lng) {
+        let address = '';
+        try {
+          const res = await fetch(
+            `https://nominatim.openstreetmap.org/reverse?format=json&lat=${exifCoords.lat}&lon=${exifCoords.lng}&zoom=18&addressdetails=1`,
+            { headers: { 'Accept-Language': 'en' } }
+          );
+          const data = await res.json();
+          address = data.display_name || '';
+        } catch (e) {}
+
+        setCommentGpsLocation({
+          lat: exifCoords.lat,
+          lng: exifCoords.lng,
+          accuracy: 3,
+          address,
+        });
+        setFetchingCommentGps(false);
+        return;
+      }
+    } catch (err) {}
+
+    // 2. Fallback to HTML5 Geolocation API
+    captureCommentGps();
   };
 
   const handleClearPhoto = () => {
     setSelectedPhotoFile(null);
+    setCommentGpsLocation(null);
     if (photoPreviewUrl) {
       URL.revokeObjectURL(photoPreviewUrl);
       setPhotoPreviewUrl(null);
@@ -417,17 +713,40 @@ export default function TicketsPage() {
     }
   };
 
+  const handleStartReply = (c: any) => {
+    setReplyingTo(c);
+    setTimeout(() => {
+      commentInputRef.current?.focus();
+    }, 50);
+  };
+
   const handleAddComment = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!activeTicketDrawer || (!commentText.trim() && !selectedPhotoFile)) return;
     setSubmittingComment(true);
     try {
+      // Eagerly await instant GPS coordinates if photo or update is being posted
+      const finalGps = await getInstantGps();
+
       const formData = new FormData();
       if (commentText.trim()) {
         formData.append('content', commentText.trim());
       }
       if (selectedPhotoFile) {
         formData.append('photo', selectedPhotoFile);
+      }
+      if (replyingTo?.id) {
+        formData.append('parentId', replyingTo.id);
+      }
+      if (finalGps?.lat && finalGps?.lng) {
+        formData.append('lat', finalGps.lat.toString());
+        formData.append('lng', finalGps.lng.toString());
+        if (finalGps.accuracy) {
+          formData.append('accuracy', finalGps.accuracy.toString());
+        }
+        if (finalGps.address) {
+          formData.append('address', finalGps.address);
+        }
       }
 
       await api.post(`/api/tickets/${activeTicketDrawer.id}/comments`, formData, {
@@ -436,6 +755,7 @@ export default function TicketsPage() {
 
       setCommentText('');
       handleClearPhoto();
+      setReplyingTo(null);
 
       const fresh = await api.get(`/api/tickets/${activeTicketDrawer.id}`);
       setActiveTicketDrawer(fresh.data);
@@ -544,18 +864,31 @@ export default function TicketsPage() {
           </p>
         </div>
 
-        {canManageTickets && (
+        <div className="flex items-center gap-2.5 flex-wrap">
           <button
-            onClick={() => setModalOpen(true)}
-            className="px-4 py-2.5 rounded-2xl bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs flex items-center space-x-2 transition shadow-lg shadow-blue-500/20 shrink-0"
+            type="button"
+            onClick={handleManualRefresh}
+            disabled={refreshing || loading}
+            className="px-3.5 py-2.5 rounded-2xl bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-800 transition flex items-center space-x-2 text-xs font-semibold shadow-sm disabled:opacity-50"
+            title="Refresh all tickets & status metrics"
           >
-            <Plus size={16} />
-            <span>Raise Support Ticket</span>
+            <RefreshCw size={14} className={refreshing || loading ? 'animate-spin text-blue-400' : 'text-slate-400'} />
+            <span>{refreshing ? 'Refreshing...' : 'Refresh Tickets'}</span>
           </button>
-        )}
+
+          {canManageTickets && (
+            <button
+              onClick={() => setModalOpen(true)}
+              className="px-4 py-2.5 rounded-2xl bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs flex items-center space-x-2 transition shadow-lg shadow-blue-500/20 shrink-0"
+            >
+              <Plus size={16} />
+              <span>Raise Support Ticket</span>
+            </button>
+          )}
+        </div>
       </div>
 
-      {/* Interactive Status Segmented Bar (Option 1: Linear / GitHub Style) */}
+      {/* Interactive Status Segmented Bar */}
       <div className="flex items-center space-x-2 overflow-x-auto pb-1 no-scrollbar">
         {STATUS_TABS.map((tab) => {
           const isActive = filterStatus === tab.key;
@@ -683,7 +1016,7 @@ export default function TicketsPage() {
               return (
                 <div
                   key={t.id}
-                  onClick={() => setActiveTicketDrawer(t)}
+                  onClick={() => handleOpenTicketDetails(t)}
                   className="group p-4 rounded-3xl bg-slate-900 border border-slate-800 hover:border-blue-500/40 hover:bg-slate-900/90 transition-all cursor-pointer flex flex-col lg:flex-row lg:items-center justify-between gap-4 shadow-sm hover:shadow-md"
                 >
                   {/* Left Column: ID, Status, Title, Description */}
@@ -897,7 +1230,7 @@ export default function TicketsPage() {
                       return (
                         <div
                           key={t.id}
-                          onClick={() => setActiveTicketDrawer(t)}
+                          onClick={() => handleOpenTicketDetails(t)}
                           className="group p-4 rounded-2xl bg-slate-900 border border-slate-800 hover:border-blue-500/40 transition cursor-pointer space-y-3 shadow-md"
                         >
                           <div className="flex items-center justify-between">
@@ -937,448 +1270,921 @@ export default function TicketsPage() {
         </div>
       )}
 
-      {/* ===================== TICKET HUB & RESOLUTION AUDIT MODAL ===================== */}
+      {/* ===================== COMPREHENSIVE 2-COLUMN TICKET METADATA & WORK HUB ===================== */}
       <Modal
         open={!!activeTicketDrawer}
         onClose={() => setActiveTicketDrawer(null)}
         title={`Ticket Hub • ${activeTicketDrawer?.ticketNumber || ''}`}
-        icon={<TicketIcon size={20} className="text-blue-400" />}
-        maxWidth="max-w-3xl"
+        icon={<TicketIcon size={22} className="text-blue-400" />}
+        maxWidth="max-w-7xl w-[96vw]"
       >
         {activeTicketDrawer && (
-          <div className="space-y-4 py-1">
-            {/* Overview Card */}
-            <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-2">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                <h3 className="text-base font-bold text-white">{activeTicketDrawer.title}</h3>
-                <div className="flex items-center space-x-2">
-                  <span className={`text-[10px] px-2.5 py-0.5 rounded-full font-bold uppercase ${getPriorityStyle(activeTicketDrawer.priority).bg}`}>
-                    {activeTicketDrawer.priority}
-                  </span>
-                  <span className={`text-[10px] px-2.5 py-0.5 rounded-full font-bold uppercase ${getStatusStyle(activeTicketDrawer.status).badge}`}>
-                    {getStatusStyle(activeTicketDrawer.status).label}
-                  </span>
-                </div>
+          <div className="py-1 space-y-4">
+            {/* Top Status & Creation Meta Bar */}
+            <div className="p-3.5 rounded-2xl bg-slate-950 border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-mono text-xs font-bold text-blue-400 px-2.5 py-1 rounded-xl bg-blue-500/10 border border-blue-500/20">
+                  {activeTicketDrawer.ticketNumber}
+                </span>
+                <span className={`text-[10px] px-2.5 py-1 rounded-full font-bold uppercase ${getPriorityStyle(activeTicketDrawer.priority).bg}`}>
+                  {activeTicketDrawer.priority} Priority
+                </span>
+                <span className={`text-[10px] px-2.5 py-1 rounded-full font-bold uppercase ${getStatusStyle(activeTicketDrawer.status).badge}`}>
+                  {getStatusStyle(activeTicketDrawer.status).label}
+                </span>
               </div>
-              <p className="text-xs text-slate-300 leading-relaxed">{activeTicketDrawer.description}</p>
+
+              <div className="flex items-center space-x-2 text-slate-400 text-[11px]">
+                <span>
+                  Raised by <strong className="text-white">{activeTicketDrawer.createdBy?.firstName || 'Staff'}</strong>
+                </span>
+                <span>•</span>
+                <span className="font-mono">{formatDateTime(activeTicketDrawer.createdAt)}</span>
+              </div>
             </div>
 
-            {/* Quick Status Control Bar (Strict RBAC) */}
-            <div className="p-3 rounded-2xl bg-slate-950 border border-slate-800 space-y-2">
-              <p className="text-[10px] text-slate-500 uppercase font-bold">
-                {isManagerOrAdmin ? 'Manager Status Progression & Reopen Controls' : 'Ticket Workflow Progression'}
-              </p>
-
-              {isManagerOrAdmin ? (
-                /* Full Controls for Admins and Product Managers */
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                  <button
-                    onClick={() => handleUpdateStatus(activeTicketDrawer.id, 'OPEN')}
-                    className={`py-1.5 px-2 rounded-xl text-[11px] font-bold border transition ${
-                      activeTicketDrawer.status === 'OPEN'
-                        ? 'bg-amber-500/20 border-amber-500 text-amber-400 shadow-sm'
-                        : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white hover:bg-slate-800'
-                    }`}
-                  >
-                    🟡 Move to Open
-                  </button>
-
-                  <button
-                    onClick={() => handleUpdateStatus(activeTicketDrawer.id, 'IN_PROGRESS')}
-                    className={`py-1.5 px-2 rounded-xl text-[11px] font-bold border transition ${
-                      activeTicketDrawer.status === 'IN_PROGRESS'
-                        ? 'bg-blue-500/20 border-blue-500 text-blue-400 shadow-sm'
-                        : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white hover:bg-slate-800'
-                    }`}
-                  >
-                    🔵 In Progress
-                  </button>
-
-                  <button
-                    onClick={() => handleOpenResolveModal(activeTicketDrawer)}
-                    className={`py-1.5 px-2 rounded-xl text-[11px] font-bold border transition ${
-                      activeTicketDrawer.status === 'RESOLVED'
-                        ? 'bg-emerald-500/20 border-emerald-500 text-emerald-400 shadow-sm'
-                        : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-emerald-400 hover:bg-slate-800'
-                    }`}
-                  >
-                    🟢 Resolve / Proof
-                  </button>
-
-                  <button
-                    onClick={() => handleUpdateStatus(activeTicketDrawer.id, 'CLOSED')}
-                    className={`py-1.5 px-2 rounded-xl text-[11px] font-bold border transition ${
-                      activeTicketDrawer.status === 'CLOSED'
-                        ? 'bg-slate-700/60 border-slate-500 text-white shadow-sm'
-                        : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white hover:bg-slate-800'
-                    }`}
-                  >
-                    ⚪ Close Ticket
-                  </button>
+            {/* 2-Column Grid Layout */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+              {/* ================= LEFT COLUMN (60% Work & Timeline Area) ================= */}
+              <div className="lg:col-span-7 space-y-5">
+                {/* Problem Description Card */}
+                <div className="p-5 rounded-3xl bg-slate-950 border border-slate-800 space-y-2.5 shadow-sm">
+                  <p className="text-[10px] text-slate-500 uppercase font-extrabold tracking-wider">Reported Issue Overview</p>
+                  <h3 className="text-lg font-bold text-white leading-snug">{activeTicketDrawer.title}</h3>
+                  <p className="text-sm text-slate-200 leading-relaxed whitespace-pre-wrap pt-1">{activeTicketDrawer.description}</p>
                 </div>
-              ) : (
-                /* Forward-only Workflow for Employees */
-                <div className="flex items-center space-x-2">
-                  {activeTicketDrawer.status === 'OPEN' && (
-                    <button
-                      onClick={() => handleUpdateStatus(activeTicketDrawer.id, 'IN_PROGRESS')}
-                      className="w-full py-2 px-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition flex items-center justify-center space-x-1.5"
-                    >
-                      <span>Start Work → Move to In Progress</span>
-                    </button>
-                  )}
 
-                  {activeTicketDrawer.status === 'IN_PROGRESS' && (
-                    <button
-                      onClick={() => handleOpenResolveModal(activeTicketDrawer)}
-                      className="w-full py-2 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition flex items-center justify-center space-x-1.5"
-                    >
-                      <span>Submit Resolution & Proof Photo →</span>
-                    </button>
-                  )}
-
-                  {activeTicketDrawer.status === 'RESOLVED' && (
-                    <div className="w-full py-2 px-3 rounded-xl bg-emerald-950/40 border border-emerald-500/30 text-emerald-400 text-xs font-semibold text-center flex items-center justify-center space-x-1.5">
-                      <ShieldCheck size={14} />
-                      <span>Resolution submitted. Pending Product Manager verification.</span>
+                {/* Resolution Summary & Evidence Proof (When available) */}
+                {(activeTicketDrawer.status === 'RESOLVED' || activeTicketDrawer.status === 'CLOSED' || activeTicketDrawer.proofPhoto) && (
+                  <div className="p-5 rounded-3xl bg-emerald-950/20 border border-emerald-500/30 space-y-3.5 text-xs shadow-sm">
+                    <div className="flex items-center justify-between border-b border-emerald-500/20 pb-2.5">
+                      <div className="flex items-center space-x-2">
+                        <ShieldCheck size={18} className="text-emerald-400" />
+                        <span className="font-bold text-emerald-400 text-sm">Resolution Verification Evidence</span>
+                      </div>
+                      {activeTicketDrawer.resolvedAt && (
+                        <span className="text-[10px] text-slate-400 font-mono">
+                          Resolved {formatDateTime(activeTicketDrawer.resolvedAt)}
+                        </span>
+                      )}
                     </div>
-                  )}
 
-                  {activeTicketDrawer.status === 'CLOSED' && (
-                    <div className="w-full py-2 px-3 rounded-xl bg-slate-900 border border-slate-800 text-slate-500 text-xs text-center">
-                      This ticket has been officially closed and archived.
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-
-            {/* Meta Grid */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
-              <div className="p-3 rounded-2xl bg-slate-950 border border-slate-800 space-y-1">
-                <p className="text-[10px] text-slate-500 uppercase font-bold">Client Account</p>
-                <p className="font-bold text-white truncate">
-                  {activeTicketDrawer.client?.name || activeTicketDrawer.client?.companyName || 'No Client'}
-                </p>
-              </div>
-
-              <div className="p-3 rounded-2xl bg-slate-950 border border-slate-800 space-y-1">
-                <p className="text-[10px] text-slate-500 uppercase font-bold">Assigned Personnel</p>
-                <p className="font-bold text-white truncate">
-                  {activeTicketDrawer.assignedUser
-                    ? `${activeTicketDrawer.assignedUser.firstName} ${activeTicketDrawer.assignedUser.lastName}`
-                    : activeTicketDrawer.assignedGroup?.name || 'Unassigned'}
-                </p>
-              </div>
-
-              <div className="p-3 rounded-2xl bg-slate-950 border border-slate-800 space-y-1">
-                <p className="text-[10px] text-slate-500 uppercase font-bold">Target SLA Date</p>
-                <p className="font-bold text-white">
-                  {activeTicketDrawer.dueDate ? new Date(activeTicketDrawer.dueDate).toLocaleDateString() : 'No Deadline'}
-                </p>
-              </div>
-            </div>
-
-            {/* ================= RESOLUTION AUDIT (GPS VISIBLE TO ADMIN/MANAGERS ONLY) ================= */}
-            {(activeTicketDrawer.status === 'RESOLVED' || activeTicketDrawer.status === 'CLOSED' || activeTicketDrawer.proofPhoto) && (
-              <div className="p-4 rounded-2xl bg-emerald-950/20 border border-emerald-500/30 space-y-3 text-xs">
-                <div className="flex items-center justify-between border-b border-emerald-500/20 pb-2">
-                  <div className="flex items-center space-x-2">
-                    <ShieldCheck size={16} className="text-emerald-400" />
-                    <span className="font-bold text-emerald-400 text-sm">Resolution Verification & Audit</span>
-                  </div>
-                  {activeTicketDrawer.resolvedAt && (
-                    <span className="text-[10px] text-slate-400 font-mono">
-                      Resolved {formatDateTime(activeTicketDrawer.resolvedAt)}
-                    </span>
-                  )}
-                </div>
-
-                <div className={`grid gap-3 ${isManagerOrAdmin && activeTicketDrawer.resolveLat ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-1'}`}>
-                  {/* Resolver Info */}
-                  <div className="space-y-1 bg-slate-950/80 p-3 rounded-xl border border-slate-800">
-                    <p className="text-[10px] text-slate-500 uppercase font-bold">Resolved By Technician</p>
-                    <p className="font-bold text-white flex items-center space-x-1.5">
-                      <User size={13} className="text-emerald-400" />
-                      <span>
-                        {activeTicketDrawer.resolvedBy
-                          ? `${activeTicketDrawer.resolvedBy.firstName} ${activeTicketDrawer.resolvedBy.lastName}`
-                          : activeTicketDrawer.assignedUser
-                          ? `${activeTicketDrawer.assignedUser.firstName} ${activeTicketDrawer.assignedUser.lastName}`
-                          : 'Technician on Record'}
-                      </span>
-                    </p>
-                    {activeTicketDrawer.resolutionNote && (
-                      <p className="text-slate-300 text-xs mt-1 pt-1 border-t border-slate-800/80">
-                        <span className="text-slate-500 font-semibold">Solution Note:</span> {activeTicketDrawer.resolutionNote}
-                      </p>
-                    )}
-                  </div>
-
-                  {/* Geolocation Audit Log (Restricted to Admin/Manager Only) */}
-                  {isManagerOrAdmin && activeTicketDrawer.resolveLat && activeTicketDrawer.resolveLng && (
-                    <div className="space-y-1 bg-slate-950/80 p-3 rounded-xl border border-slate-800">
-                      <p className="text-[10px] text-slate-500 uppercase font-bold flex items-center justify-between">
-                        <span>Technician Resolve Location</span>
-                        {activeTicketDrawer.resolveAccuracy && (
-                          <span className="text-[9px] text-emerald-400 font-mono">
-                            ±{activeTicketDrawer.resolveAccuracy}m Accuracy
-                          </span>
-                        )}
+                    <div className="space-y-2.5">
+                      <p className="text-slate-300">
+                        <span className="text-slate-500 font-semibold">Resolved By:</span>{' '}
+                        <strong className="text-white">
+                          {activeTicketDrawer.resolvedBy
+                            ? `${activeTicketDrawer.resolvedBy.firstName} ${activeTicketDrawer.resolvedBy.lastName}`
+                            : activeTicketDrawer.assignedUser
+                            ? `${activeTicketDrawer.assignedUser.firstName} ${activeTicketDrawer.assignedUser.lastName}`
+                            : 'Field Technician'}
+                        </strong>
                       </p>
 
-                      <div className="space-y-1.5 pt-0.5">
-                        <p className="text-slate-200 text-xs flex items-start space-x-1.5">
-                          <MapPin size={13} className="text-emerald-400 shrink-0 mt-0.5" />
-                          <span className="leading-snug">
-                            {activeTicketDrawer.resolveAddress ||
-                              `${activeTicketDrawer.resolveLat.toFixed(5)}° N, ${activeTicketDrawer.resolveLng.toFixed(5)}° E`}
-                          </span>
-                        </p>
-
-                        <div className="flex items-center space-x-2 pt-1">
-                          <a
-                            href={`https://www.google.com/maps?q=${activeTicketDrawer.resolveLat},${activeTicketDrawer.resolveLng}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="px-2.5 py-1 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 text-[10px] font-semibold flex items-center space-x-1 transition border border-emerald-500/30"
-                          >
-                            <ExternalLink size={10} />
-                            <span>Verify on Google Maps</span>
-                          </a>
+                      {activeTicketDrawer.resolutionNote && (
+                        <div className="p-3.5 rounded-2xl bg-slate-950/80 border border-slate-800">
+                          <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Technician Solution Notes</p>
+                          <p className="text-slate-200 text-xs leading-relaxed whitespace-pre-wrap">
+                            {activeTicketDrawer.resolutionNote}
+                          </p>
                         </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
+                      )}
 
-                {/* Resolution Proof Photo Thumbnail */}
-                {activeTicketDrawer.proofPhoto && (
-                  <div className="space-y-1 pt-1">
-                    <p className="text-[10px] text-slate-400 uppercase font-bold">Attached Site Proof of Work</p>
-                    <div
-                      onClick={() =>
-                        setPreviewModalPhoto(
-                          activeTicketDrawer.proofPhoto.startsWith('http')
-                            ? activeTicketDrawer.proofPhoto
-                            : `${API_BASE_URL}${activeTicketDrawer.proofPhoto}`
-                        )
-                      }
-                      className="relative group rounded-xl overflow-hidden border border-emerald-500/40 bg-slate-950 max-w-sm cursor-pointer hover:border-emerald-400 transition shadow-lg"
-                    >
-                      <img
-                        src={
-                          activeTicketDrawer.proofPhoto.startsWith('http')
-                            ? activeTicketDrawer.proofPhoto
-                            : `${API_BASE_URL}${activeTicketDrawer.proofPhoto}`
-                        }
-                        alt="Resolution proof photo"
-                        className="w-full max-h-48 object-cover group-hover:scale-105 transition duration-300"
-                      />
-                      <div className="p-2 bg-slate-950/90 border-t border-emerald-500/20 flex items-center justify-between text-[11px]">
-                        <span className="text-slate-300 font-medium flex items-center gap-1">
-                          <FileImage size={13} className="text-emerald-400" />
-                          <span>Resolution Proof Photo</span>
-                        </span>
-                        <span className="text-emerald-400 font-semibold flex items-center gap-0.5 text-[10px]">
-                          <Maximize2 size={10} /> Inspect High-Res
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Attached Hardware (if any) */}
-            {activeTicketDrawer.inventoryItems && activeTicketDrawer.inventoryItems.length > 0 && (
-              <div className="p-3 rounded-2xl bg-slate-950 border border-slate-800 space-y-1 text-xs">
-                <p className="text-[10px] text-slate-500 font-bold uppercase flex items-center gap-1">
-                  <Package size={11} className="text-blue-400" />
-                  <span>Equipment Attached ({activeTicketDrawer.inventoryItems.length})</span>
-                </p>
-                <div className="flex flex-wrap gap-1.5 pt-0.5">
-                  {activeTicketDrawer.inventoryItems.map((inv: any) => (
-                    <span
-                      key={inv.id}
-                      className="px-2.5 py-1 rounded-xl bg-blue-500/10 text-blue-300 font-mono text-[10px] border border-blue-500/20 inline-flex items-center space-x-1"
-                    >
-                      <Barcode size={10} />
-                      <span>{inv.inventoryItem?.deviceName}</span>
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Discussion & Photos Feed */}
-            <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-3">
-              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
-                <MessageSquare size={13} className="text-blue-400" />
-                <span>Discussion & Site Photos ({activeTicketDrawer.comments?.length || 0})</span>
-              </h4>
-
-              <div className="space-y-3 max-h-56 overflow-y-auto pr-1">
-                {activeTicketDrawer.comments && activeTicketDrawer.comments.length > 0 ? (
-                  activeTicketDrawer.comments.map((c: any) => {
-                    const photoFullUrl = c.photo ? (c.photo.startsWith('http') ? c.photo : `${API_BASE_URL}${c.photo}`) : null;
-
-                    return (
-                      <div
-                        key={c.id}
-                        className="p-3 rounded-xl bg-slate-900 border border-slate-800 flex items-start justify-between gap-3 text-xs"
-                      >
-                        <div className="flex items-start space-x-2.5 flex-1 min-w-0">
-                          <div className="w-6 h-6 rounded-full bg-blue-600/30 text-blue-400 font-bold text-[10px] flex items-center justify-center shrink-0">
-                            {c.author?.firstName?.charAt(0) || 'U'}
-                          </div>
-                          <div className="space-y-1 flex-1 min-w-0">
-                            <div className="flex items-center space-x-2">
-                              <span className="font-bold text-white">
-                                {c.author?.firstName} {c.author?.lastName}
+                      {/* Proof Photo Thumbnail */}
+                      {activeTicketDrawer.proofPhoto && (
+                        <div className="space-y-1.5 pt-1">
+                          <p className="text-[10px] text-slate-400 uppercase font-bold">Attached On-Site Proof Photo</p>
+                          <div
+                            onClick={() =>
+                              setPreviewModalPhoto(
+                                activeTicketDrawer.proofPhoto.startsWith('http')
+                                  ? activeTicketDrawer.proofPhoto
+                                  : `${API_BASE_URL}${activeTicketDrawer.proofPhoto}`
+                              )
+                            }
+                            className="relative group rounded-2xl overflow-hidden border border-emerald-500/40 bg-slate-950 max-w-md cursor-pointer hover:border-emerald-400 transition shadow-lg"
+                          >
+                            <img
+                              src={
+                                activeTicketDrawer.proofPhoto.startsWith('http')
+                                  ? activeTicketDrawer.proofPhoto
+                                  : `${API_BASE_URL}${activeTicketDrawer.proofPhoto}`
+                              }
+                              alt="Resolution proof photo"
+                              className="w-full max-h-56 object-cover group-hover:scale-105 transition duration-300"
+                            />
+                            <div className="p-2.5 bg-slate-950/90 border-t border-emerald-500/20 flex items-center justify-between text-xs">
+                              <span className="text-slate-300 font-medium flex items-center gap-1.5">
+                                <FileImage size={14} className="text-emerald-400" />
+                                <span>Verified Proof Photo</span>
                               </span>
-                              <span className="text-[10px] text-slate-500 font-mono">
-                                {formatDateTime(c.createdAt)}
+                              <span className="text-emerald-400 font-semibold flex items-center gap-1 text-xs">
+                                <Maximize2 size={12} /> Inspect High-Res
                               </span>
                             </div>
-                            {c.content && <p className="text-slate-300 leading-relaxed break-words">{c.content}</p>}
-
-                            {photoFullUrl && (
-                              <div className="pt-1">
-                                <div
-                                  onClick={() => setPreviewModalPhoto(photoFullUrl)}
-                                  className="relative group rounded-xl overflow-hidden border border-slate-700/80 bg-slate-950 max-w-xs cursor-pointer hover:border-blue-500/50 transition shadow-md"
-                                >
-                                  <img
-                                    src={photoFullUrl}
-                                    alt="Site photo"
-                                    className="w-full max-h-40 object-cover group-hover:scale-105 transition duration-200"
-                                    onError={(e) => {
-                                      (e.target as HTMLElement).style.display = 'none';
-                                    }}
-                                  />
-                                  <div className="p-1.5 bg-slate-950/90 border-t border-slate-800 flex items-center justify-between text-[10px]">
-                                    <span className="text-slate-300 font-medium flex items-center gap-1">
-                                      <FileImage size={11} className="text-blue-400" />
-                                      <span>Attached Photo</span>
-                                    </span>
-                                    <span className="text-blue-400 font-semibold flex items-center gap-0.5">
-                                      <Maximize2 size={9} /> High-Res
-                                    </span>
-                                  </div>
-                                </div>
-                              </div>
-                            )}
                           </div>
                         </div>
-
-                        {(c.authorId === user?.id || isAdmin) && (
-                          <button
-                            onClick={() => handleDeleteComment(c.id)}
-                            className="text-slate-500 hover:text-red-400 transition p-1 shrink-0"
-                            title="Delete comment"
-                          >
-                            <Trash2 size={12} />
-                          </button>
-                        )}
-                      </div>
-                    );
-                  })
-                ) : (
-                  <p className="text-xs text-slate-500 text-center py-4">No comments or photos yet.</p>
-                )}
-              </div>
-
-              {selectedPhotoFile && (
-                <div className="flex items-center justify-between p-2 rounded-xl bg-slate-900 border border-blue-500/30 gap-2">
-                  <div className="flex items-center space-x-2 min-w-0">
-                    {photoPreviewUrl ? (
-                      <img
-                        src={photoPreviewUrl}
-                        alt="Selected preview"
-                        className="w-9 h-9 rounded-lg object-cover border border-slate-700 shrink-0"
-                      />
-                    ) : (
-                      <div className="w-9 h-9 rounded-lg bg-slate-800 text-blue-400 flex items-center justify-center shrink-0">
-                        <FileImage size={16} />
-                      </div>
-                    )}
-                    <div className="truncate text-xs">
-                      <p className="font-semibold text-white truncate">{selectedPhotoFile.name}</p>
-                      <p className="text-[10px] text-slate-400 font-mono">
-                        {(selectedPhotoFile.size / (1024 * 1024)).toFixed(2)} MB • Ready
-                      </p>
+                      )}
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={handleClearPhoto}
-                    className="p-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-rose-400 transition shrink-0"
-                    title="Remove Photo"
-                  >
-                    <X size={14} />
-                  </button>
+                )}
+
+                {/* Assigned Hardware Devices with 3 Clear Installation Statuses */}
+                {activeTicketDrawer.inventoryItems && activeTicketDrawer.inventoryItems.length > 0 && (
+                  <div className="p-4 rounded-3xl bg-slate-950 border border-slate-800 space-y-3 text-xs shadow-sm">
+                    <div className="flex items-center justify-between">
+                      <p className="text-[10px] text-slate-400 font-bold uppercase flex items-center gap-1.5">
+                        <Package size={13} className="text-blue-400" />
+                        <span>Attached Hardware & Field Equipment ({activeTicketDrawer.inventoryItems.length})</span>
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedPreinstalledItem(null);
+                          setConsumeModalOpen(true);
+                        }}
+                        className="px-2.5 py-1 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 text-[11px] font-bold flex items-center gap-1 transition"
+                      >
+                        <Wrench size={11} />
+                        <span>+ Scan & Install Device</span>
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
+                      {activeTicketDrawer.inventoryItems.map((inv: any) => {
+                        const isInstalled = inv.isInstalled || inv.inventoryItem?.isInstalledAtSite;
+                        const isReturned = inv.isReturned || (inv.inventoryItem?.location && inv.inventoryItem.location.toLowerCase().startsWith('must return'));
+                        const isPending = !isInstalled && !isReturned;
+
+                        return (
+                          <div
+                            key={inv.id}
+                            className={`p-3 rounded-2xl border flex flex-col justify-between text-xs space-y-2 transition ${
+                              isInstalled
+                                ? 'bg-emerald-950/10 border-emerald-500/30 shadow-sm'
+                                : isReturned
+                                ? 'bg-rose-950/10 border-rose-500/30'
+                                : 'bg-slate-900 border-slate-800'
+                            }`}
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="min-w-0 pr-1">
+                                <p className="font-bold text-white truncate">{inv.inventoryItem?.deviceName}</p>
+                                <p className="text-[10px] text-indigo-400 font-mono font-bold truncate">
+                                  SN: {inv.inventoryItem?.barcode}
+                                </p>
+                              </div>
+                              <span
+                                className={`px-2 py-0.5 rounded-md text-[9px] font-bold uppercase shrink-0 border ${
+                                  isInstalled
+                                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                                    : isReturned
+                                    ? 'bg-rose-500/20 text-rose-300 border-rose-500/40'
+                                    : 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                                }`}
+                              >
+                                {isInstalled ? '🟢 Installed at Site' : isReturned ? '🔴 Must Return' : '🟡 In Field Kit'}
+                              </span>
+                            </div>
+
+                            {inv.installedAt && (
+                              <p className="text-[10px] text-emerald-400 font-mono">
+                                Verified on {new Date(inv.installedAt).toLocaleDateString()}
+                              </p>
+                            )}
+
+                            {/* Action Buttons */}
+                            <div className="flex items-center justify-end gap-1.5 pt-1 border-t border-slate-900">
+                              {isInstalled && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setSelectedRetrieveItem(inv.inventoryItem);
+                                    setRetrieveModalOpen(true);
+                                  }}
+                                  className="px-2 py-0.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 text-[10px] font-bold transition flex items-center gap-1"
+                                  title="Retrieve faulty product from field and optionally dispatch replacement"
+                                >
+                                  <RotateCcw size={10} />
+                                  <span>Retrieve / Replace</span>
+                                </button>
+                              )}
+
+                              {isPending && (
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setSelectedPreinstalledItem(inv);
+                                      setConsumeModalOpen(true);
+                                    }}
+                                    className="px-2 py-0.5 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold transition flex items-center gap-1"
+                                  >
+                                    <Wrench size={10} />
+                                    <span>Install Now</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleMarkItemForReturn(inv.inventoryItemId, inv.inventoryItem?.deviceName || 'Device')}
+                                    className="px-2 py-0.5 rounded-lg bg-slate-800 hover:bg-rose-950/40 text-slate-400 hover:text-rose-300 border border-slate-700 text-[10px] font-semibold transition"
+                                  >
+                                    Mark Return
+                                  </button>
+                                </>
+                              )}
+
+                              {isReturned && (
+                                <span className="text-[10px] text-rose-400 font-medium italic">
+                                  Marked to return to warehouse
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {/* Discussion & Photos Feed — EXPANDED & SPACIOUS */}
+                <div className="p-6 rounded-3xl bg-slate-950 border border-slate-800 space-y-4 shadow-sm flex flex-col">
+                  <div className="flex items-center justify-between border-b border-slate-800/90 pb-3">
+                    <h4 className="text-sm font-bold uppercase tracking-wider text-slate-200 flex items-center gap-2">
+                      <MessageSquare size={16} className="text-blue-400" />
+                      <span>Discussion & On-Site Activity Log</span>
+                    </h4>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <button
+                        type="button"
+                        onClick={() => setConsumeModalOpen(true)}
+                        className="px-3 py-1 rounded-xl bg-amber-600/20 hover:bg-amber-600/30 text-amber-400 hover:text-amber-300 border border-amber-500/30 transition flex items-center gap-1.5 text-xs font-bold shadow-sm"
+                        title="Scan barcode and mark equipment as installed/used on this ticket with GPS & timestamp"
+                      >
+                        <Wrench size={13} />
+                        <span>Install Equipment</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleRefreshActiveTicket}
+                        disabled={drawerRefreshing}
+                        className="px-2.5 py-1 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-blue-400 border border-slate-800 transition flex items-center gap-1.5 text-xs font-semibold"
+                        title="Refresh Discussion & Activity Log"
+                      >
+                        <RefreshCw size={12} className={drawerRefreshing ? 'animate-spin text-blue-400' : ''} />
+                        <span>{drawerRefreshing ? 'Refreshing...' : 'Refresh'}</span>
+                      </button>
+                      <span className="text-xs font-mono font-bold px-2.5 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                        {activeTicketDrawer.comments?.length || 0} Messages
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Message Stream */}
+                  <div className="space-y-3.5 min-h-[380px] max-h-[520px] overflow-y-auto pr-2 custom-scrollbar">
+                    {activeTicketDrawer.comments && activeTicketDrawer.comments.length > 0 ? (
+                      activeTicketDrawer.comments.map((c: any) => {
+                        const photoFullUrl = c.photo ? (c.photo.startsWith('http') ? c.photo : `${API_BASE_URL}${c.photo}`) : null;
+
+                        return (
+                          <div
+                            key={c.id}
+                            className="p-4 rounded-2xl bg-slate-900/90 border border-slate-800/90 hover:border-slate-700/80 transition flex items-start justify-between gap-3 text-xs"
+                          >
+                            <div className="flex items-start space-x-3 flex-1 min-w-0">
+                              <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-blue-600/30 to-indigo-500/30 text-blue-300 font-bold text-xs flex items-center justify-center shrink-0 border border-blue-500/30 shadow-sm">
+                                {c.author?.firstName?.charAt(0) || 'U'}
+                              </div>
+                              <div className="space-y-1.5 flex-1 min-w-0">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="font-bold text-white text-xs">
+                                    {c.author?.firstName} {c.author?.lastName}
+                                  </span>
+                                  {c.author?.role && (
+                                    <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 uppercase font-semibold border border-slate-700">
+                                      {c.author.role}
+                                    </span>
+                                  )}
+                                  <span className="text-[10px] text-slate-500 font-mono ml-auto">
+                                    {formatDateTime(c.createdAt)}
+                                  </span>
+                                </div>
+
+                                {/* Quoted Parent Reply Context */}
+                                {c.parent && (
+                                  <div className="flex items-center space-x-2 px-3 py-1.5 rounded-xl bg-slate-950/90 border-l-2 border-blue-500 text-[11px] text-slate-300 my-1 shadow-inner">
+                                    <CornerDownRight size={13} className="text-blue-400 shrink-0" />
+                                    <span className="text-slate-400 font-medium">Replying to</span>
+                                    <span className="font-bold text-blue-300">
+                                      @{c.parent.author?.firstName} {c.parent.author?.lastName}
+                                    </span>
+                                    {c.parent.author?.role && (
+                                      <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-slate-800 text-slate-400 uppercase">
+                                        {c.parent.author.role}
+                                      </span>
+                                    )}
+                                    <span className="truncate text-slate-400 max-w-[260px] italic">
+                                      "{c.parent.content || 'Attached photo'}"
+                                    </span>
+                                  </div>
+                                )}
+
+                                {c.content && (
+                                  <div className="p-3 rounded-2xl bg-slate-950/70 border border-slate-800/80 text-slate-200 text-xs leading-relaxed break-words">
+                                    {c.content}
+                                  </div>
+                                )}
+
+                                {/* Attached Photo Evidence */}
+                                {photoFullUrl && (
+                                  <div className="pt-2">
+                                    <div
+                                      onClick={() => setPreviewModalPhoto(photoFullUrl)}
+                                      className="relative group rounded-2xl overflow-hidden border border-slate-700/80 bg-slate-950 max-w-md cursor-pointer hover:border-blue-500/50 transition shadow-lg"
+                                    >
+                                      <img
+                                        src={photoFullUrl}
+                                        alt="Site photo"
+                                        className="w-full max-h-60 object-cover group-hover:scale-105 transition duration-300"
+                                      />
+                                      <div className="p-2 bg-slate-950/90 border-t border-slate-800 flex items-center justify-between text-xs">
+                                        <span className="text-slate-300 font-medium flex items-center gap-1.5">
+                                          <FileImage size={13} className="text-blue-400" />
+                                          <span>Attached Photo Evidence</span>
+                                        </span>
+                                        <span className="text-blue-400 font-semibold flex items-center gap-1 text-[11px]">
+                                          <Maximize2 size={11} /> Inspect High-Res
+                                        </span>
+                                      </div>
+                                    </div>
+                                  </div>
+                                )}
+
+                                {/* GPS Location Log for Admin & Manager */}
+                                {isManagerOrAdmin && ((c.lat != null && c.lng != null) || Boolean(c.address)) && (
+                                  <div className="mt-2.5 p-3 rounded-2xl bg-emerald-950/40 border border-emerald-500/30 text-xs text-emerald-300 space-y-1.5 shadow-inner">
+                                    <div className="flex items-center justify-between font-bold text-emerald-400">
+                                      <span className="flex items-center gap-1.5 text-[11px]">
+                                        <MapPin size={13} className="text-emerald-400 shrink-0" />
+                                        <span>{c.photo ? 'On-Site Media & Photo Capture Location' : 'Message Timestamp & Verified Location'}</span>
+                                      </span>
+                                      {c.accuracy && (
+                                        <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-900/60 border border-emerald-500/30 text-emerald-300">
+                                          ±{Math.round(c.accuracy)}m Accuracy
+                                        </span>
+                                      )}
+                                    </div>
+                                    <p className="text-slate-200 text-xs leading-snug font-medium">
+                                      {c.address ||
+                                        (c.lat != null && c.lng != null
+                                          ? `${Number(c.lat).toFixed(5)}° N, ${Number(c.lng).toFixed(5)}° E`
+                                          : 'On-site location verified')}
+                                    </p>
+                                    {c.lat != null && c.lng != null && (
+                                      <a
+                                        href={`https://www.google.com/maps?q=${c.lat},${c.lng}`}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 text-[11px] font-semibold border border-emerald-500/30 transition shadow-sm"
+                                      >
+                                        <ExternalLink size={11} />
+                                        <span>Verify on Google Maps</span>
+                                      </a>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Comment Actions: Reply + Delete */}
+                            <div className="flex items-center space-x-1.5 shrink-0 self-start pt-0.5">
+                              <button
+                                type="button"
+                                onClick={() => handleStartReply(c)}
+                                className="px-2.5 py-1 rounded-lg bg-slate-800/80 hover:bg-blue-600/20 text-slate-400 hover:text-blue-300 border border-slate-700/60 transition flex items-center space-x-1 text-[11px] font-semibold"
+                                title="Reply to this message"
+                              >
+                                <Reply size={11} />
+                                <span>Reply</span>
+                              </button>
+
+                              {(c.authorId === user?.id || isAdmin) && (
+                                <button
+                                  onClick={() => handleDeleteComment(c.id)}
+                                  className="text-slate-500 hover:text-rose-400 transition p-1.5 rounded-lg hover:bg-rose-500/10 shrink-0"
+                                  title="Delete comment"
+                                >
+                                  <Trash2 size={13} />
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })
+                    ) : (
+                      <div className="py-16 text-center space-y-2 border border-dashed border-slate-800/90 rounded-2xl">
+                        <MessageSquare size={28} className="mx-auto text-slate-600 opacity-60" />
+                        <p className="text-xs font-semibold text-slate-400">No discussion updates yet.</p>
+                        <p className="text-[11px] text-slate-500">
+                          Use the box below to post progress notes, question technicians, or capture on-site photos.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Replying To Banner */}
+                  {replyingTo && (
+                    <div className="flex items-center justify-between p-2.5 rounded-2xl bg-blue-950/50 border border-blue-500/40 text-xs">
+                      <div className="flex items-center space-x-2 min-w-0">
+                        <CornerDownRight size={14} className="text-blue-400 shrink-0" />
+                        <span className="text-slate-400">Replying to</span>
+                        <strong className="text-blue-300 font-bold truncate">
+                          @{replyingTo.author?.firstName} {replyingTo.author?.lastName}
+                        </strong>
+                        {replyingTo.author?.role && (
+                          <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-slate-800 text-slate-400 uppercase shrink-0">
+                            {replyingTo.author.role}
+                          </span>
+                        )}
+                        <span className="truncate text-slate-400 max-w-[240px] italic hidden sm:inline">
+                          "{replyingTo.content || 'Attached photo'}"
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setReplyingTo(null)}
+                        className="p-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition text-[11px] flex items-center space-x-1 shrink-0 ml-2"
+                        title="Cancel reply"
+                      >
+                        <X size={13} />
+                        <span>Cancel</span>
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Attached Photo Preview */}
+                  {selectedPhotoFile && (
+                    <div className="flex flex-col p-2.5 rounded-2xl bg-slate-900 border border-blue-500/40 gap-2">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center space-x-2.5 min-w-0">
+                          {photoPreviewUrl ? (
+                            <img
+                              src={photoPreviewUrl}
+                              alt="Selected preview"
+                              className="w-11 h-11 rounded-xl object-cover border border-slate-700 shrink-0"
+                            />
+                          ) : (
+                            <div className="w-11 h-11 rounded-xl bg-slate-800 text-blue-400 flex items-center justify-center shrink-0">
+                              <FileImage size={20} />
+                            </div>
+                          )}
+                          <div className="truncate text-xs">
+                            <p className="font-semibold text-white truncate">{selectedPhotoFile.name}</p>
+                            <p className="text-[10px] text-blue-400 font-mono">
+                              {(selectedPhotoFile.size / (1024 * 1024)).toFixed(2)} MB • Ready to attach
+                            </p>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleClearPhoto}
+                          className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-rose-400 transition shrink-0"
+                          title="Remove Photo"
+                        >
+                          <X size={16} />
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Universal Live GPS Location Tag Indicator for Text & Media */}
+                  <div className="flex items-center justify-between px-3 py-1.5 rounded-xl bg-slate-950/80 border border-slate-800 text-[11px]">
+                    {fetchingCommentGps ? (
+                      <div className="flex items-center space-x-1.5 text-slate-400 font-mono">
+                        <Loader2 size={11} className="animate-spin text-blue-400 shrink-0" />
+                        <span>Detecting live on-site GPS location...</span>
+                      </div>
+                    ) : commentGpsLocation ? (
+                      <div className="flex items-center justify-between w-full gap-2">
+                        <div className="flex items-center space-x-1.5 text-emerald-400 truncate">
+                          <MapPin size={12} className="text-emerald-400 shrink-0" />
+                          <span className="truncate text-slate-300 font-medium">
+                            {commentGpsLocation.address ||
+                              `${commentGpsLocation.lat.toFixed(4)}°, ${commentGpsLocation.lng.toFixed(4)}°`}
+                          </span>
+                        </div>
+                        <div className="flex items-center space-x-2 shrink-0">
+                          <span className="font-mono text-[9px] text-emerald-400 bg-emerald-950/60 px-1.5 py-0.5 rounded border border-emerald-500/30">
+                            ±{commentGpsLocation.accuracy}m
+                          </span>
+                          <button
+                            type="button"
+                            onClick={captureCommentGps}
+                            className="text-slate-400 hover:text-white transition p-0.5"
+                            title="Refresh Location"
+                          >
+                            <RefreshCw size={11} />
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-between w-full text-slate-400">
+                        <span className="flex items-center gap-1.5">
+                          <MapPin size={12} className="text-slate-500 shrink-0" />
+                          <span>Location auto-tagging active (Text & Media)</span>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={captureCommentGps}
+                          className="text-blue-400 hover:underline text-[10px] font-semibold"
+                        >
+                          Tag Location
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  <form onSubmit={handleAddComment} className="flex items-center space-x-2.5 pt-3 border-t border-slate-800/90">
+                    <input
+                      ref={photoInputRef}
+                      type="file"
+                      accept="image/*,.heic,.heif,.dng,.raw,.cr2,.nef,.arw,.tiff,.tif,.bmp"
+                      onChange={handlePhotoSelect}
+                      className="hidden"
+                    />
+                    <input
+                      ref={cameraInputRef}
+                      type="file"
+                      accept="image/*"
+                      capture="environment"
+                      onChange={handlePhotoSelect}
+                      className="hidden"
+                    />
+
+                    {/* Camera & Upload Options Popover */}
+                    <div className="relative">
+                      <button
+                        type="button"
+                        onClick={() => setPhotoChoiceOpen(!photoChoiceOpen)}
+                        className={`p-3 rounded-2xl border transition flex items-center justify-center shrink-0 ${
+                          selectedPhotoFile
+                            ? 'bg-blue-600/20 border-blue-500/50 text-blue-400'
+                            : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white hover:bg-slate-800'
+                        }`}
+                        title="Attach Photo with Live Camera or File Upload"
+                      >
+                        <Camera size={18} />
+                      </button>
+
+                      {photoChoiceOpen && (
+                        <div className="absolute bottom-full left-0 mb-2 w-52 bg-slate-900 border border-slate-700/80 rounded-2xl shadow-2xl p-1.5 z-30 space-y-1">
+                          <button
+                            type="button"
+                            onClick={() => startCamera('environment')}
+                            className="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-white hover:bg-blue-600/20 hover:text-blue-300 transition flex items-center gap-2"
+                          >
+                            <Camera size={15} className="text-blue-400" />
+                            <span>Live Camera Photo</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPhotoChoiceOpen(false);
+                              photoInputRef.current?.click();
+                            }}
+                            className="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-white hover:bg-blue-600/20 hover:text-blue-300 transition flex items-center gap-2"
+                          >
+                            <Upload size={15} className="text-indigo-400" />
+                            <span>Upload From Files</span>
+                          </button>
+                        </div>
+                      )}
+                    </div>
+
+                    <input
+                      ref={commentInputRef}
+                      type="text"
+                      value={commentText}
+                      onFocus={() => {
+                        if (!commentGpsLocation && !fetchingCommentGps) {
+                          captureCommentGps();
+                        }
+                      }}
+                      onChange={(e) => setCommentText(e.target.value)}
+                      placeholder={
+                        replyingTo
+                          ? `Replying to @${replyingTo.author?.firstName}...`
+                          : selectedPhotoFile
+                          ? 'Add optional message with attached photo...'
+                          : 'Type progress update, technical notes, or response...'
+                      }
+                      className={`flex-1 ${inputClassName} py-2.5`}
+                    />
+
+                    <button
+                      type="submit"
+                      disabled={submittingComment || (!commentText.trim() && !selectedPhotoFile)}
+                      className="px-5 py-3 rounded-2xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition flex items-center gap-2 shrink-0 disabled:opacity-50 shadow-md shadow-blue-500/20"
+                    >
+                      <Send size={13} />
+                      <span>{submittingComment ? 'Posting...' : replyingTo ? 'Reply' : 'Post Update'}</span>
+                    </button>
+                  </form>
                 </div>
-              )}
-
-              <form onSubmit={handleAddComment} className="flex items-center space-x-2 pt-2 border-t border-slate-800">
-                <input
-                  ref={photoInputRef}
-                  type="file"
-                  accept="image/*,.heic,.heif,.dng,.raw,.cr2,.nef,.arw,.tiff,.tif,.bmp"
-                  onChange={handlePhotoSelect}
-                  className="hidden"
-                />
-
-                <button
-                  type="button"
-                  onClick={() => photoInputRef.current?.click()}
-                  className={`p-2.5 rounded-xl border transition flex items-center justify-center shrink-0 ${
-                    selectedPhotoFile
-                      ? 'bg-blue-600/20 border-blue-500/50 text-blue-400'
-                      : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white hover:bg-slate-800'
-                  }`}
-                  title="Attach High-Resolution / RAW Site Photo"
-                >
-                  <Camera size={16} />
-                </button>
-
-                <input
-                  type="text"
-                  value={commentText}
-                  onChange={(e) => setCommentText(e.target.value)}
-                  placeholder={selectedPhotoFile ? 'Add optional note for attached photo...' : 'Post progress update or question...'}
-                  className={`flex-1 ${inputClassName}`}
-                />
-
-                <button
-                  type="submit"
-                  disabled={submittingComment || (!commentText.trim() && !selectedPhotoFile)}
-                  className="px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition flex items-center gap-1.5 shrink-0 disabled:opacity-50"
-                >
-                  <Send size={12} />
-                  <span>{submittingComment ? 'Sending...' : 'Post'}</span>
-                </button>
-              </form>
-            </div>
-
-            {/* Admin-Only Ticket Delete Option */}
-            {isAdmin && (
-              <div className="pt-3 border-t border-slate-800/80 flex items-center justify-between">
-                <span className="text-[10px] text-slate-500 uppercase font-bold flex items-center gap-1">
-                  <ShieldCheck size={12} className="text-rose-400" />
-                  <span>Admin Zone</span>
-                </span>
-                <button
-                  type="button"
-                  onClick={() => handleDeleteTicket(activeTicketDrawer.id)}
-                  className="px-3 py-1.5 rounded-xl bg-rose-600/10 hover:bg-rose-600/20 text-rose-400 border border-rose-500/30 text-xs font-semibold transition flex items-center space-x-1.5"
-                >
-                  <Trash2 size={13} />
-                  <span>Permanently Delete Ticket</span>
-                </button>
               </div>
-            )}
+
+              {/* ================= RIGHT COLUMN (40% Rich Metadata & Logistics Panel) ================= */}
+              <div className="lg:col-span-5 space-y-3.5">
+                {/* 1. Quick Workflow Progression Controls */}
+                <div className="p-3.5 rounded-2xl bg-slate-950 border border-slate-800 space-y-2">
+                  <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">
+                    {isManagerOrAdmin ? 'Manager Workflow Status Controls' : 'Ticket Workflow Actions'}
+                  </p>
+
+                  {isManagerOrAdmin ? (
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        onClick={() => handleUpdateStatus(activeTicketDrawer.id, 'OPEN')}
+                        className={`py-2 px-2.5 rounded-xl text-xs font-bold border transition flex items-center justify-center space-x-1.5 ${
+                          activeTicketDrawer.status === 'OPEN'
+                            ? 'bg-amber-500/20 border-amber-500 text-amber-400 shadow-sm'
+                            : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white hover:bg-slate-800'
+                        }`}
+                      >
+                        <span>🟡 Move to Open</span>
+                      </button>
+
+                      <button
+                        onClick={() => handleUpdateStatus(activeTicketDrawer.id, 'IN_PROGRESS')}
+                        className={`py-2 px-2.5 rounded-xl text-xs font-bold border transition flex items-center justify-center space-x-1.5 ${
+                          activeTicketDrawer.status === 'IN_PROGRESS'
+                            ? 'bg-blue-500/20 border-blue-500 text-blue-400 shadow-sm'
+                            : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white hover:bg-slate-800'
+                        }`}
+                      >
+                        <span>🔵 In Progress</span>
+                      </button>
+
+                      <button
+                        onClick={() => handleOpenResolveModal(activeTicketDrawer)}
+                        className={`py-2 px-2.5 rounded-xl text-xs font-bold border transition flex items-center justify-center space-x-1.5 ${
+                          activeTicketDrawer.status === 'RESOLVED'
+                            ? 'bg-emerald-500/20 border-emerald-500 text-emerald-400 shadow-sm'
+                            : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-emerald-400 hover:bg-slate-800'
+                        }`}
+                      >
+                        <span>🟢 Resolve / Proof</span>
+                      </button>
+
+                      <button
+                        onClick={() => handleUpdateStatus(activeTicketDrawer.id, 'CLOSED')}
+                        className={`py-2 px-2.5 rounded-xl text-xs font-bold border transition flex items-center justify-center space-x-1.5 ${
+                          activeTicketDrawer.status === 'CLOSED'
+                            ? 'bg-slate-700/60 border-slate-500 text-white shadow-sm'
+                            : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white hover:bg-slate-800'
+                        }`}
+                      >
+                        <span>⚪ Close Ticket</span>
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {activeTicketDrawer.status === 'OPEN' && (
+                        <button
+                          onClick={() => handleUpdateStatus(activeTicketDrawer.id, 'IN_PROGRESS')}
+                          className="w-full py-2.5 px-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition flex items-center justify-center space-x-2"
+                        >
+                          <span>Start Work → Move to In Progress</span>
+                        </button>
+                      )}
+
+                      {activeTicketDrawer.status === 'IN_PROGRESS' && (
+                        <button
+                          onClick={() => handleOpenResolveModal(activeTicketDrawer)}
+                          className="w-full py-2.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition flex items-center justify-center space-x-2"
+                        >
+                          <span>Submit Resolution & Proof Photo →</span>
+                        </button>
+                      )}
+
+                      {activeTicketDrawer.status === 'RESOLVED' && (
+                        <div className="w-full py-2 px-3 rounded-xl bg-emerald-950/40 border border-emerald-500/30 text-emerald-400 text-xs font-semibold text-center flex items-center justify-center space-x-1.5">
+                          <ShieldCheck size={14} />
+                          <span>Resolution submitted. Pending Product Manager verification.</span>
+                        </div>
+                      )}
+
+                      {activeTicketDrawer.status === 'CLOSED' && (
+                        <div className="w-full py-2 px-3 rounded-xl bg-slate-900 border border-slate-800 text-slate-500 text-xs text-center">
+                          This ticket has been officially closed and archived.
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* 2. SLA & Timeline Details Card */}
+                <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-2.5 text-xs">
+                  <p className="text-[10px] text-slate-500 uppercase font-bold flex items-center gap-1.5">
+                    <Clock size={12} className="text-amber-400" />
+                    <span>SLA & Timeline Metadata</span>
+                  </p>
+
+                  <div className="space-y-2 pt-0.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-400">Target SLA Date:</span>
+                      <span className="font-bold text-white font-mono">
+                        {activeTicketDrawer.dueDate ? new Date(activeTicketDrawer.dueDate).toLocaleDateString() : 'No Target Date'}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-400">SLA Status:</span>
+                      {activeTicketDrawer.dueDate ? (
+                        new Date(activeTicketDrawer.dueDate) < new Date() &&
+                        activeTicketDrawer.status !== 'RESOLVED' &&
+                        activeTicketDrawer.status !== 'CLOSED' ? (
+                          <span className="px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-400 text-[10px] font-bold border border-rose-500/30">
+                            🔴 SLA Overdue
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 text-[10px] font-bold border border-emerald-500/30">
+                            🟢 On-Track
+                          </span>
+                        )
+                      ) : (
+                        <span className="text-slate-500">Standard Priority</span>
+                      )}
+                    </div>
+
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-400">Ticket Created:</span>
+                      <span className="text-slate-200 font-mono text-[11px]">{formatDateTime(activeTicketDrawer.createdAt)}</span>
+                    </div>
+
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-400">Last Modified:</span>
+                      <span className="text-slate-200 font-mono text-[11px]">{formatDateTime(activeTicketDrawer.updatedAt)}</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 3. Client & Site Account Card */}
+                <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-2.5 text-xs">
+                  <p className="text-[10px] text-slate-500 uppercase font-bold flex items-center gap-1.5">
+                    <Building2 size={12} className="text-purple-400" />
+                    <span>Client & Account Info</span>
+                  </p>
+
+                  {activeTicketDrawer.client ? (
+                    <div className="space-y-2 pt-0.5">
+                      <div>
+                        <p className="font-bold text-white text-sm">
+                          {activeTicketDrawer.client.companyName || activeTicketDrawer.client.name}
+                        </p>
+                        {activeTicketDrawer.client.companyName && (
+                          <p className="text-slate-400 text-[11px]">Contact: {activeTicketDrawer.client.name}</p>
+                        )}
+                      </div>
+
+                      {activeTicketDrawer.client.phone && (
+                        <p className="flex items-center space-x-2 text-slate-300">
+                          <Phone size={12} className="text-purple-400 shrink-0" />
+                          <a href={`tel:${activeTicketDrawer.client.phone}`} className="text-blue-400 hover:underline">
+                            {activeTicketDrawer.client.phone}
+                          </a>
+                        </p>
+                      )}
+
+                      {activeTicketDrawer.client.email && (
+                        <p className="flex items-center space-x-2 text-slate-300">
+                          <Mail size={12} className="text-purple-400 shrink-0" />
+                          <a href={`mailto:${activeTicketDrawer.client.email}`} className="text-blue-400 hover:underline truncate">
+                            {activeTicketDrawer.client.email}
+                          </a>
+                        </p>
+                      )}
+
+                      {activeTicketDrawer.client.address && (
+                        <p className="flex items-start space-x-2 text-slate-300">
+                          <MapPin size={12} className="text-purple-400 shrink-0 mt-0.5" />
+                          <span>
+                            {activeTicketDrawer.client.address}
+                            {activeTicketDrawer.client.city ? `, ${activeTicketDrawer.client.city}` : ''}
+                          </span>
+                        </p>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="text-slate-500 text-xs italic">No specific client attached to this ticket.</p>
+                  )}
+                </div>
+
+                {/* 4. Field Assignment & Logistics Card */}
+                <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-2.5 text-xs">
+                  <p className="text-[10px] text-slate-500 uppercase font-bold flex items-center gap-1.5">
+                    <User size={12} className="text-blue-400" />
+                    <span>Field Team & Logistics Assignment</span>
+                  </p>
+
+                  <div className="space-y-2.5 pt-0.5">
+                    {/* Assigned Technician */}
+                    <div>
+                      <span className="text-[10px] text-slate-500 uppercase block">Direct Assigned Technician</span>
+                      {activeTicketDrawer.assignedUser ? (
+                        <div className="flex items-center space-x-2.5 mt-1">
+                          <div className="w-7 h-7 rounded-full bg-blue-600/30 text-blue-400 font-bold text-xs flex items-center justify-center shrink-0 border border-blue-500/30">
+                            {activeTicketDrawer.assignedUser.firstName?.charAt(0)}
+                          </div>
+                          <div>
+                            <p className="font-bold text-white">
+                              {activeTicketDrawer.assignedUser.firstName} {activeTicketDrawer.assignedUser.lastName}
+                            </p>
+                            <p className="text-[10px] text-slate-400 font-mono">
+                              {activeTicketDrawer.assignedUser.designation || 'Technician'}
+                            </p>
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="text-slate-400 text-xs mt-0.5">Not assigned to an individual technician</p>
+                      )}
+                    </div>
+
+                    {/* Assigned Group */}
+                    {activeTicketDrawer.assignedGroup && (
+                      <div className="pt-2 border-t border-slate-800/80">
+                        <span className="text-[10px] text-slate-500 uppercase block">Assigned Field Unit / Group</span>
+                        <p className="font-bold text-blue-400 mt-0.5">{activeTicketDrawer.assignedGroup.name}</p>
+                      </div>
+                    )}
+
+                    {/* Dispatched Vehicle */}
+                    {activeTicketDrawer.vehicle && (
+                      <div className="pt-2 border-t border-slate-800/80">
+                        <span className="text-[10px] text-slate-500 uppercase block">Dispatched Service Vehicle</span>
+                        <div className="flex items-center space-x-2 mt-0.5 text-slate-300">
+                          <Truck size={13} className="text-blue-400 shrink-0" />
+                          <span className="font-mono font-bold text-white">{activeTicketDrawer.vehicle.registrationNo}</span>
+                          <span className="text-slate-500 text-[11px]">({activeTicketDrawer.vehicle.model || 'Field Van'})</span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* 5. Geolocation Audit Log (Restricted to Admin / Manager / HR) */}
+                {isManagerOrAdmin && (activeTicketDrawer.resolveLat || activeTicketDrawer.resolveAddress) && (
+                  <div className="p-4 rounded-2xl bg-emerald-950/20 border border-emerald-500/30 space-y-2.5 text-xs">
+                    <p className="text-[10px] text-emerald-400 uppercase font-bold flex items-center justify-between">
+                      <span className="flex items-center gap-1">
+                        <MapPin size={13} />
+                        <span>Technician Location Audit</span>
+                      </span>
+                      {activeTicketDrawer.resolveAccuracy && (
+                        <span className="text-[9px] font-mono">±{activeTicketDrawer.resolveAccuracy}m Accuracy</span>
+                      )}
+                    </p>
+
+                    <div className="space-y-2 pt-0.5">
+                      <p className="text-slate-200 text-xs leading-snug">
+                        {activeTicketDrawer.resolveAddress ||
+                          (activeTicketDrawer.resolveLat && activeTicketDrawer.resolveLng
+                            ? `${Number(activeTicketDrawer.resolveLat).toFixed(5)}° N, ${Number(activeTicketDrawer.resolveLng).toFixed(5)}° E`
+                            : 'Technician on-site location verified')}
+                      </p>
+
+                      {activeTicketDrawer.resolveLat && activeTicketDrawer.resolveLng && (
+                        <a
+                          href={`https://www.google.com/maps?q=${activeTicketDrawer.resolveLat},${activeTicketDrawer.resolveLng}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="px-3 py-1.5 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 text-xs font-semibold flex items-center justify-center space-x-1.5 transition border border-emerald-500/30 w-full shadow-sm"
+                        >
+                          <ExternalLink size={12} />
+                          <span>Verify Location on Google Maps</span>
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Admin-Only Danger Zone */}
+                {isAdmin && (
+                  <div className="p-3.5 rounded-2xl bg-rose-950/20 border border-rose-500/30 flex items-center justify-between text-xs">
+                    <span className="text-rose-400 font-bold uppercase text-[10px]">Admin Management</span>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteTicket(activeTicketDrawer.id)}
+                      className="px-3 py-1.5 rounded-xl bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 text-xs font-semibold transition flex items-center space-x-1.5"
+                    >
+                      <Trash2 size={13} />
+                      <span>Delete Ticket</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
         )}
       </Modal>
@@ -1442,7 +2248,7 @@ export default function TicketsPage() {
             <FormField label="Assign Field Group">
               <select
                 value={form.assignedGroupId}
-                onChange={(e) => setForm({ ...form, assignedGroupId: e.target.value })}
+                onChange={(e) => handleGroupSelect(e.target.value)}
                 className={inputClassName}
               >
                 <option value="">Select Group (Optional)...</option>
@@ -1470,25 +2276,115 @@ export default function TicketsPage() {
             </FormField>
           </div>
 
-          <FormField label={`Assign Hardware / Equipment (${form.inventoryItemIds.length} Selected)`}>
-            <div className="space-y-1 max-h-32 overflow-y-auto bg-slate-950 p-2 rounded-2xl border border-slate-800">
-              {inventoryList.map((inv) => {
-                const isSelected = form.inventoryItemIds.includes(inv.id);
-                return (
-                  <div
-                    key={inv.id}
-                    onClick={() => toggleInventorySelection(inv.id)}
-                    className={`p-2 rounded-xl flex items-center justify-between cursor-pointer transition text-xs ${
-                      isSelected ? 'bg-blue-600/20 border border-blue-500/40' : 'bg-slate-900/60 border border-slate-800'
-                    }`}
-                  >
-                    <div className="text-white">{inv.deviceName} ({inv.barcode})</div>
-                    {isSelected && <Check size={13} className="text-blue-400" />}
+          {/* Group Equipment Auto-Link Section */}
+          {(() => {
+            const activeGroup = groups.find((g) => g.id === form.assignedGroupId);
+            const groupEquipment = inventoryList.filter((inv) => inv.assignedGroupId === form.assignedGroupId);
+            const otherEquipment = inventoryList.filter((inv) => inv.assignedGroupId !== form.assignedGroupId);
+
+            return (
+              <div className="space-y-2.5">
+                {activeGroup && groupEquipment.length > 0 && (
+                  <div className="p-3 rounded-2xl bg-indigo-950/60 border border-indigo-500/40 text-indigo-200 text-xs flex items-center justify-between shadow-sm">
+                    <div className="flex items-center space-x-2 min-w-0">
+                      <Package size={15} className="text-indigo-400 shrink-0" />
+                      <span className="truncate">
+                        Auto-linked <strong>{groupEquipment.length} products</strong> from <strong>{activeGroup.name}</strong>
+                      </span>
+                    </div>
+                    <span className="px-2 py-0.5 rounded-lg bg-indigo-900/80 border border-indigo-500/40 text-[10px] font-mono font-bold text-indigo-300 shrink-0 ml-2">
+                      {groupEquipment.length} Selected
+                    </span>
                   </div>
-                );
-              })}
-            </div>
-          </FormField>
+                )}
+
+                <FormField label={`Assign Hardware / Equipment (${form.inventoryItemIds.length} Selected)`}>
+                  <div className="space-y-2 max-h-48 overflow-y-auto bg-slate-950 p-2.5 rounded-2xl border border-slate-800 custom-scrollbar">
+                    {/* 1. Group Allocated Equipment */}
+                    {activeGroup && groupEquipment.length > 0 && (
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between px-1">
+                          <p className="text-[10px] font-bold uppercase text-indigo-400 tracking-wider">
+                            Group Equipment (Auto-Linked from {activeGroup.name})
+                          </p>
+                        </div>
+                        {groupEquipment.map((inv) => {
+                          const isSelected = form.inventoryItemIds.includes(inv.id);
+                          return (
+                            <div
+                              key={inv.id}
+                              onClick={() => toggleInventorySelection(inv.id)}
+                              className={`p-2.5 rounded-xl flex items-center justify-between cursor-pointer transition text-xs ${
+                                isSelected
+                                  ? 'bg-indigo-950/70 border border-indigo-500/60 text-white font-semibold'
+                                  : 'bg-slate-900/60 border border-slate-800 text-slate-300'
+                              }`}
+                            >
+                              <div>
+                                <p className="text-white font-bold">{inv.deviceName}</p>
+                                <p className="text-[10px] text-indigo-300 font-mono">
+                                  SN: {inv.barcode} • {inv.modelNumber || 'Hardware'} • Allocated to Group
+                                </p>
+                              </div>
+                              <div
+                                className={`w-5 h-5 rounded-lg border flex items-center justify-center ${
+                                  isSelected ? 'bg-indigo-600 border-indigo-500 text-white' : 'border-slate-700'
+                                }`}
+                              >
+                                {isSelected && <Check size={12} />}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {/* 2. Additional Warehouse Inventory */}
+                    <div className="space-y-1 pt-1">
+                      {activeGroup && groupEquipment.length > 0 && (
+                        <p className="text-[10px] font-bold uppercase text-slate-500 tracking-wider px-1 pt-1">
+                          Additional Available Warehouse Stock
+                        </p>
+                      )}
+
+                      {otherEquipment.length === 0 && (!activeGroup || groupEquipment.length === 0) ? (
+                        <p className="text-xs text-slate-500 text-center py-2">No inventory equipment available.</p>
+                      ) : (
+                        otherEquipment.map((inv) => {
+                          const isSelected = form.inventoryItemIds.includes(inv.id);
+                          return (
+                            <div
+                              key={inv.id}
+                              onClick={() => toggleInventorySelection(inv.id)}
+                              className={`p-2.5 rounded-xl flex items-center justify-between cursor-pointer transition text-xs ${
+                                isSelected
+                                  ? 'bg-blue-600/20 border border-blue-500/40 text-white font-semibold'
+                                  : 'bg-slate-900/60 border border-slate-800 text-slate-300 hover:bg-slate-900'
+                              }`}
+                            >
+                              <div>
+                                <p className="text-white">{inv.deviceName}</p>
+                                <p className="text-[10px] text-slate-500 font-mono">
+                                  SN: {inv.barcode} • {inv.modelNumber || 'Hardware'}
+                                </p>
+                              </div>
+                              <div
+                                className={`w-5 h-5 rounded-lg border flex items-center justify-center ${
+                                  isSelected ? 'bg-blue-600 border-blue-500 text-white' : 'border-slate-700'
+                                }`}
+                              >
+                                {isSelected && <Check size={12} />}
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+                </FormField>
+              </div>
+            );
+          })()}
 
           <ModalFooter
             onClose={() => setModalOpen(false)}
@@ -1611,6 +2507,80 @@ export default function TicketsPage() {
         </form>
       </Modal>
 
+      {/* ===================== LIVE ON-SITE CAMERA VIEWFINDER MODAL ===================== */}
+      <Modal
+        open={cameraModalOpen}
+        onClose={stopCamera}
+        title="Live On-Site Camera Capture"
+        maxWidth="max-w-xl"
+      >
+        <div className="space-y-4 text-xs">
+          <div className="relative rounded-2xl overflow-hidden bg-black border border-slate-800 shadow-2xl flex items-center justify-center min-h-[300px] max-h-[440px]">
+            <video
+              ref={videoRef}
+              autoPlay
+              playsInline
+              muted
+              className="w-full h-full object-cover max-h-[440px]"
+            />
+            <canvas ref={canvasRef} className="hidden" />
+
+            {cameraLoading && (
+              <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center space-y-2 text-white">
+                <Loader2 size={32} className="animate-spin text-blue-400" />
+                <p className="font-semibold">Starting camera...</p>
+              </div>
+            )}
+
+            {/* Flip Camera Button */}
+            <button
+              type="button"
+              onClick={toggleFacingMode}
+              className="absolute top-3 right-3 p-2.5 rounded-full bg-slate-900/80 backdrop-blur-md text-white border border-slate-700/70 hover:bg-blue-600 transition shadow-lg z-10"
+              title="Switch Camera (Front/Back)"
+            >
+              <RefreshCw size={16} />
+            </button>
+
+            {/* Location Tag Status */}
+            <div className="absolute top-3 left-3 px-2.5 py-1 rounded-full bg-slate-950/80 backdrop-blur-md text-emerald-400 border border-emerald-500/30 flex items-center gap-1.5 text-[10px] font-mono z-10">
+              <MapPin size={11} className="animate-pulse" />
+              <span>
+                {commentGpsLocation ? 'GPS Tagged' : fetchingCommentGps ? 'Locating...' : 'GPS Ready'}
+              </span>
+            </div>
+          </div>
+
+          {/* Location Summary if captured */}
+          {commentGpsLocation?.address && (
+            <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800 flex items-center gap-2 text-slate-300 text-[11px]">
+              <MapPin size={13} className="text-emerald-400 shrink-0" />
+              <span className="truncate">{commentGpsLocation.address}</span>
+            </div>
+          )}
+
+          {/* Camera Bottom Shutter Bar */}
+          <div className="flex items-center justify-center space-x-6 pt-2 pb-1">
+            <button
+              type="button"
+              onClick={stopCamera}
+              className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold transition text-xs"
+            >
+              Cancel
+            </button>
+
+            <button
+              type="button"
+              onClick={handleTakeSnapshot}
+              className="p-4 rounded-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white shadow-xl shadow-blue-500/30 hover:scale-105 active:scale-95 transition flex items-center justify-center border-4 border-white/20"
+              title="Capture On-Site Photo"
+            >
+              <Camera size={26} />
+            </button>
+          </div>
+        </div>
+      </Modal>
+
       {/* ===================== HIGH-RESOLUTION LIGHTBOX MODAL ===================== */}
       {previewModalPhoto && (
         <div
@@ -1656,6 +2626,40 @@ export default function TicketsPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* In-Field Ticket Equipment Installation & Consumption Modal */}
+      {activeTicketDrawer && (
+        <TicketConsumeEquipmentModal
+          isOpen={consumeModalOpen}
+          onClose={() => {
+            setConsumeModalOpen(false);
+            setSelectedPreinstalledItem(null);
+          }}
+          ticketId={activeTicketDrawer.id}
+          ticketNumber={activeTicketDrawer.ticketNumber}
+          preselectedItem={selectedPreinstalledItem}
+          onSuccess={async () => {
+            await Promise.all([handleRefreshActiveTicket(), fetchTickets()]);
+          }}
+        />
+      )}
+
+      {/* Retrieve / Replace Field Product Modal */}
+      {selectedRetrieveItem && (
+        <RetrieveAndReplaceModal
+          isOpen={retrieveModalOpen}
+          onClose={() => {
+            setRetrieveModalOpen(false);
+            setSelectedRetrieveItem(null);
+          }}
+          item={selectedRetrieveItem}
+          ticketId={activeTicketDrawer?.id}
+          clientId={activeTicketDrawer?.clientId}
+          onSuccess={async () => {
+            await Promise.all([handleRefreshActiveTicket(), fetchTickets()]);
+          }}
+        />
       )}
     </div>
   );

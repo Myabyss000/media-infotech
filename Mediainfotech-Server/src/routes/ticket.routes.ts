@@ -8,6 +8,9 @@ import {
   deleteTicket,
   addTicketComment,
   deleteTicketComment,
+  consumeTicketInventory,
+  markTicketItemForReturn,
+  retrieveAndReplaceTicketItem,
 } from '../controllers/ticket.controller';
 import { authenticateToken } from '../middlewares/auth.middleware';
 import { requirePermission } from '../middlewares/rbac.middleware';
@@ -28,5 +31,10 @@ router.delete('/:id', requirePermission('tickets', 'delete'), deleteTicket);
 // Ticket Comments & Activity Timeline with Photo Upload Support
 router.post('/:id/comments', upload.single('photo'), requirePermission('tickets', 'read'), addTicketComment);
 router.delete('/:id/comments/:commentId', requirePermission('tickets', 'read'), deleteTicketComment);
+
+// In-Field Equipment Consumption & Barcode Installation on Ticket
+router.post('/:id/consume-inventory', upload.single('photo'), requirePermission('tickets', 'read'), consumeTicketInventory);
+router.post('/:id/inventory/:itemId/mark-return', requirePermission('tickets', 'update'), markTicketItemForReturn);
+router.post('/:id/retrieve-and-replace', requirePermission('tickets', 'update'), retrieveAndReplaceTicketItem);
 
 export default router;

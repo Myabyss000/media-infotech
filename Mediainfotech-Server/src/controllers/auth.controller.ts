@@ -195,7 +195,12 @@ export const resetPassword = async (req: Request, res: Response): Promise<void> 
       data: { usedAt: new Date() },
     });
 
-    res.json({ message: 'Password has been reset successfully' });
+    // Invalidate all active sessions to disconnect compromised tokens
+    await prisma.session.deleteMany({
+      where: { userId: tokenRecord.userId },
+    });
+
+    res.json({ message: 'Password has been reset successfully. Please log in with your new password.' });
   } catch (error) {
     console.error('Reset password error:', error);
     res.status(500).json({ error: 'Failed to reset password' });
@@ -235,5 +240,54 @@ export const getMe = async (req: AuthenticatedRequest, res: Response): Promise<v
     res.json(user);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch profile' });
+  }
+};
+
+export const changePassword = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const { currentPassword, newPassword } = req.body;
+    if (!currentPassword || !newPassword) {
+      res.status(400).json({ error: 'Current password and new password are required' });
+      return;
+    }
+
+    if (newPassword.length < 6) {
+      res.status(400).json({ error: 'New password must be at least 6 characters' });
+      return;
+    }
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
+
+    const isMatch = await comparePassword(currentPassword, user.password);
+    if (!isMatch) {
+      res.status(400).json({ error: 'Incorrect current password' });
+      return;
+    }
+
+    const hashedPassword = await hashPassword(newPassword);
+    await prisma.user.update({
+      where: { id: userId },
+      data: { password: hashedPassword },
+    });
+
+    // Invalidate all active sessions except the current one could be handled, or force re-auth
+    await prisma.session.deleteMany({
+      where: { userId },
+    });
+
+    res.json({ success: true, message: 'Password changed successfully' });
+  } catch (error) {
+    console.error('changePassword error:', error);
+    res.status(500).json({ error: 'Failed to update password' });
   }
 };

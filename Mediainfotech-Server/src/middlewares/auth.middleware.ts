@@ -6,7 +6,11 @@ export interface AuthenticatedRequest extends Request {
   user?: JwtPayload & {
     id: string;
     email: string;
+    username: string;
+    role: string;
     isActive: boolean;
+    firstName?: string | null;
+    lastName?: string | null;
   };
 }
 
@@ -27,7 +31,7 @@ export const authenticateToken = async (
     const payload = verifyAccessToken(token);
     const user = await prisma.user.findUnique({
       where: { id: payload.userId },
-      select: { id: true, username: true, email: true, role: true, isActive: true },
+      select: { id: true, username: true, email: true, role: true, isActive: true, firstName: true, lastName: true },
     });
 
     if (!user || !user.isActive) {
@@ -42,6 +46,8 @@ export const authenticateToken = async (
       email: user.email,
       role: user.role,
       isActive: user.isActive,
+      firstName: user.firstName,
+      lastName: user.lastName,
     };
 
     next();

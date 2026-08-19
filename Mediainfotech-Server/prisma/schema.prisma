@@ -46,6 +46,37 @@ model User {
   workDays        String?   @default("MONDAY,TUESDAY,WEDNESDAY,THURSDAY,FRIDAY,SATURDAY") // Scheduled workdays
   lateGracePeriod Int?      @default(15)     // Grace period in minutes
 
+  // HR & Lifecycle Details
+  employeeCode           String?   @unique
+  gender                 String?
+  dob                    DateTime?
+  maritalStatus          String?
+  bloodGroup             String?
+  address                String?
+  city                   String?
+  state                  String?
+  postalCode             String?
+  emergencyContactName   String?
+  emergencyContactRelation String?
+  emergencyContactPhone  String?
+  panNumber              String?
+  aadhaarNumber          String?
+  bankName               String?
+  bankAccountNumber      String?
+  bankIfsc               String?
+  bankBranch             String?
+  employmentType         String?   @default("FULL_TIME") // "FULL_TIME", "PART_TIME", "CONTRACT", "INTERN"
+  probationPeriodMonths  Int?      @default(3)
+  confirmationDate       DateTime?
+  resignationDate        DateTime?
+  exitDate               DateTime?
+  ctcAnnual              Float?
+
+  // Reporting Hierarchy
+  managerId              String?
+  manager                User?     @relation("reportingHierarchy", fields: [managerId], references: [id])
+  directReports          User[]    @relation("reportingHierarchy")
+
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
@@ -56,14 +87,28 @@ model User {
   auditLogs         AuditLog[]          @relation("actor")
   notifications     Notification[]
 
-  // Attendance
-  attendanceRecords Attendance[]
+  // Attendance & Shifts
+  attendanceRecords           Attendance[]
+  regularizationsRequested    AttendanceRegularization[] @relation("regularizationRequester")
+  regularizationsReviewed     AttendanceRegularization[] @relation("regularizationReviewer")
+  assignedShiftId             String?
+  assignedShift               Shift?                     @relation("userAssignedShift", fields: [assignedShiftId], references: [id])
+  shiftSchedules              ShiftSchedule[]
+  shiftSwapsRequested         ShiftSwapRequest[]         @relation("swapRequester")
+  shiftSwapsTargeted          ShiftSwapRequest[]         @relation("swapTargetUser")
+  shiftSwapsApproved          ShiftSwapRequest[]         @relation("swapApprover")
 
-  // HR
-  leaveRequests     LeaveRequest[]      @relation("requester")
-  leaveApprovals    LeaveRequest[]      @relation("approver")
-  assignedVehicles  VehicleAssignment[]
-  payslips          Payslip[]
+  // HR Relations
+  leaveRequests          LeaveRequest[]         @relation("requester")
+  leaveApprovals         LeaveRequest[]         @relation("approver")
+  leaveBalances          LeaveBalance[]
+  assignedVehicles       VehicleAssignment[]
+  payslips               Payslip[]
+  documents              EmployeeDocument[]
+  onboardingTasks        OnboardingTask[]
+  expenseClaims          ExpenseClaim[]
+  salaryStructure        EmployeeSalaryStructure?
+  policyAcknowledgments  PolicyAcknowledgment[]
 
   // Groups
   groupMemberships  GroupMember[]
@@ -74,11 +119,26 @@ model User {
   // Clients
   managedClients    Client[]            @relation("accountManager")
 
+  // Inventory & Assets
+  assignedInventoryItems InventoryItem[] @relation("userAssignedInventory")
+  inventoryLogs          InventoryLog[]  @relation("inventoryLogUser")
+
   // Tickets
   createdTickets    Ticket[]            @relation("ticketCreator")
   assignedTickets   Ticket[]            @relation("assignedTicketUser")
   resolvedTickets   Ticket[]            @relation("resolvedTicketUser")
   ticketComments    TicketComment[]     @relation("ticketCommentAuthor")
+
+  // Projects & Tenders
+  managedProjects     Project[]         @relation("projectManager")
+  createdProjects     Project[]         @relation("projectCreator")
+  uploadedProjectDocs ProjectDocument[] @relation("projectDocUploader")
+
+  // Real-Time Internal Team Chat
+  chatParticipants    ChatParticipant[]
+  sentChatMessages    ChatMessage[]     @relation("sentChatMessages")
+  createdChatChannels ChatChannel[]     @relation("createdChatChannels")
+  chatReactions       ChatMessageReaction[]
 }
 
 model Permission {
@@ -150,26 +210,88 @@ model AuditLog {
   createdAt DateTime @default(now())
 }
 
+// ============================================================================
+// REAL-TIME NOTIFICATION SYSTEM (CATEGORIZED & PRIORITIZED)
+// ============================================================================
+
+enum NotificationCategory {
+  TICKETS       // Breakdowns, SLA escalations, ticket assignments, status changes
+  PROJECTS      // Milestone completions, site camera mounting, JIR sign-off, tender dates
+  INVENTORY     // Barcode scan approvals, field kit dispatch, defect returns, low stock
+  CHAT          // Team channel mentions, direct messages, urgent broadcasts
+  ATTENDANCE_HR // Geofence check-in alerts, leave approvals, payroll generated
+  SYSTEM        // Security alerts, role changes, audit alerts
+}
+
+enum NotificationPriority {
+  URGENT        // Critical SLA breakdown, immediate defective item return alert
+  HIGH          // Project deadline approaching, high-priority ticket
+  NORMAL        // Standard milestone, chat message, inventory dispatched
+  LOW           // Informational log
+}
+
 model Notification {
-  id        String   @id @default(cuid())
-  title     String
-  message   String
-  type      String   // "info", "warning", "success", "error"
-  isRead    Boolean  @default(false)
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  link      String?
-  createdAt DateTime @default(now())
+  id          String               @id @default(cuid())
+  userId      String
+  user        User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  title       String
+  message     String
+  category    NotificationCategory @default(SYSTEM)
+  priority    NotificationPriority @default(NORMAL)
+  type        String?              // Backward compatibility: "info", "warning", "success", "error"
+  
+  isRead      Boolean              @default(false)
+  readAt      DateTime?
+
+  actionUrl   String?              // e.g. "/tickets", "/projects", "/inventory", "/chat"
+  link        String?              // Backward compatibility
+  entityId    String?              // Associated ID (Ticket ID, Project ID, etc.)
+  entityType  String?              // "Ticket", "Project", "InventoryItem", "ChatMessage", "LeaveRequest"
+  metadata    Json?                // JSON metadata for extra details
+
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @default(now()) @updatedAt
+
+  @@index([userId, isRead])
+  @@index([userId, category])
+  @@index([userId, priority])
+  @@index([createdAt])
 }
 
 // ============================================================================
-// ATTENDANCE — GPS + Camera Verified
+// ATTENDANCE & SHIFTS — GPS + Camera Verified, Breaks, Regularization, Rostering
 // ============================================================================
 
 enum AttendanceStatus {
   PENDING
   APPROVED
   REJECTED
+}
+
+enum BreakType {
+  LUNCH
+  TEA
+  MEETING
+  PERSONAL
+  OTHER
+}
+
+enum RegularizationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum RegularizationType {
+  MISSED_CHECK_IN
+  MISSED_CHECK_OUT
+  FULL_DAY_CORRECTION
+  CLIENT_VISIT
+  TECHNICAL_GLITCH
+  WORK_FROM_HOME
+  OTHER
 }
 
 model Attendance {
@@ -194,21 +316,134 @@ model Attendance {
   checkOutAddress String?
   checkOutNote    String?
 
+  // Breaks & Productive Hours
+  breaks             AttendanceBreak[]
+  totalBreakMinutes  Int              @default(0)
+  productiveHours    Float?
+
   // Status & Calculations
-  status           AttendanceStatus @default(PENDING)
-  totalHours       Float?
-  overtimeHours    Float?
+  status             AttendanceStatus @default(PENDING)
+  totalHours         Float?
+  overtimeHours      Float?
 
   // Late Entry & Early Exit Tracking
-  isLate           Boolean          @default(false)
-  lateMinutes      Int              @default(0)
-  isEarlyExit      Boolean          @default(false)
-  earlyExitMinutes Int              @default(0)
+  isLate             Boolean          @default(false)
+  lateMinutes        Int              @default(0)
+  isEarlyExit        Boolean          @default(false)
+  earlyExitMinutes   Int              @default(0)
 
-  createdAt        DateTime         @default(now())
-  updatedAt        DateTime         @updatedAt
+  // Regularization Tracking
+  isRegularized      Boolean          @default(false)
+  regularizationId   String?
+  regularization     AttendanceRegularization? @relation(fields: [regularizationId], references: [id])
+
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
 
   @@unique([userId, date])
+  @@index([userId, status])
+  @@index([status])
+  @@index([date])
+}
+
+model AttendanceBreak {
+  id              String     @id @default(cuid())
+  attendanceId    String
+  attendance      Attendance @relation(fields: [attendanceId], references: [id], onDelete: Cascade)
+  type            BreakType  @default(LUNCH)
+  startTime       DateTime
+  endTime         DateTime?
+  durationMinutes Int?
+  note            String?
+
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+}
+
+model AttendanceRegularization {
+  id                 String               @id @default(cuid())
+  userId             String
+  user               User                 @relation("regularizationRequester", fields: [userId], references: [id], onDelete: Cascade)
+  date               DateTime             @db.Date
+  requestedCheckIn   DateTime?
+  requestedCheckOut  DateTime?
+  reasonType         RegularizationType   @default(MISSED_CHECK_IN)
+  reason             String
+  status             RegularizationStatus @default(PENDING)
+
+  reviewedBy         String?
+  reviewer           User?                @relation("regularizationReviewer", fields: [reviewedBy], references: [id])
+  reviewedAt         DateTime?
+  reviewNote         String?
+
+  attendanceRecords  Attendance[]
+
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+}
+
+model Shift {
+  id                    String             @id @default(cuid())
+  name                  String
+  code                  String             @unique
+  startTime             String             @default("09:30")
+  endTime               String             @default("18:30")
+  gracePeriod           Int                @default(15)
+  halfDayThresholdHours Float              @default(4.0)
+  color                 String             @default("#3b82f6")
+  description           String?
+  isActive              Boolean            @default(true)
+
+  assignedUsers         User[]             @relation("userAssignedShift")
+  schedules             ShiftSchedule[]
+  swapRequestsFrom      ShiftSwapRequest[] @relation("swapFromShift")
+  swapRequestsTo        ShiftSwapRequest[] @relation("swapToShift")
+
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+}
+
+model ShiftSchedule {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  shiftId   String
+  shift     Shift    @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+  date      DateTime @db.Date
+  notes     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, date])
+}
+
+enum SwapRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+model ShiftSwapRequest {
+  id           String            @id @default(cuid())
+  requesterId  String
+  requester    User              @relation("swapRequester", fields: [requesterId], references: [id], onDelete: Cascade)
+  targetUserId String?
+  targetUser   User?             @relation("swapTargetUser", fields: [targetUserId], references: [id])
+  date         DateTime          @db.Date
+  fromShiftId  String
+  fromShift    Shift             @relation("swapFromShift", fields: [fromShiftId], references: [id], onDelete: Cascade)
+  toShiftId    String
+  toShift      Shift             @relation("swapToShift", fields: [toShiftId], references: [id], onDelete: Cascade)
+  reason       String
+  status       SwapRequestStatus @default(PENDING)
+  approvedBy   String?
+  approver     User?             @relation("swapApprover", fields: [approvedBy], references: [id])
+  reviewNote   String?
+
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
 }
 
 model AttendanceSettings {
@@ -225,6 +460,22 @@ model AttendanceSettings {
   lateThresholdMinutes       Int      @default(15)
   updatedBy                  String?
   updatedAt                  DateTime @updatedAt
+}
+
+model CompanySettings {
+  id                String   @id @default("default")
+  name              String   @default("Media Infotech Private Limited")
+  tagline           String   @default("Enterprise IT Solutions, Software Engineering & Cloud Infrastructure")
+  address           String   @default("Corporate Tower, Suite 400, Sector 5, Salt Lake, Kolkata, WB - 700091")
+  cin               String   @default("U72200WB2020PTC239871")
+  gstin             String   @default("19AAECM4920M1Z8")
+  email             String   @default("hr@mediainfotech.com")
+  website           String   @default("www.mediainfotech.com")
+  phone             String   @default("+91 33 4000 1234")
+  logoUrl           String?  @default("/Icon.png")
+  authorizedSigner  String   @default("Authorized Signatory / HR Dept.")
+  updatedBy         String?
+  updatedAt         DateTime @updatedAt
 }
 
 // ============================================================================
@@ -259,6 +510,10 @@ model LeaveRequest {
   reason        String
   status        LeaveStatus @default(PENDING)
 
+  isHalfDay     Boolean     @default(false)
+  halfDayPeriod String?     // "FIRST_HALF" | "SECOND_HALF"
+  documentUrl   String?
+
   approvedBy    String?
   approver      User?       @relation("approver", fields: [approvedBy], references: [id])
   approvedAt    DateTime?
@@ -266,18 +521,117 @@ model LeaveRequest {
 
   createdAt     DateTime    @default(now())
   updatedAt     DateTime    @updatedAt
+
+  @@index([userId, status])
+  @@index([status])
+  @@index([startDate, endDate])
 }
 
 model LeaveBalance {
-  id        String    @id @default(cuid())
-  userId    String
-  type      LeaveType
-  year      Int
-  total     Float
-  used      Float     @default(0)
-  remaining Float
+  id              String    @id @default(cuid())
+  userId          String
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type            LeaveType
+  year            Int
+  total           Float
+  used            Float     @default(0)
+  remaining       Float
+
+  lastUpdatedBy   String?
+  lastAdjustedAt  DateTime?
+  adjustmentNote  String?
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
   @@unique([userId, type, year])
+}
+
+model EmployeeDocument {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title      String
+  type       String   // "OFFER_LETTER", "ID_PROOF", "ACADEMIC", "EXPERIENCE", "CONTRACT", "NDA", "OTHER"
+  fileUrl    String
+  fileSize   String?
+  uploadedAt DateTime @default(now())
+}
+
+model OnboardingTask {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title       String
+  category    String    // "IT_SETUP", "DOCUMENTATION", "TRAINING", "HR_ORIENTATION", "OFFBOARDING"
+  isCompleted Boolean   @default(false)
+  completedAt DateTime?
+  assignedTo  String?
+  dueDate     DateTime?
+  notes       String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+model CompanyPolicy {
+  id             String                 @id @default(cuid())
+  title          String
+  category       String                 // "LEAVE_POLICY", "CODE_OF_CONDUCT", "IT_SECURITY", "POSH", "EXPENSE_POLICY", "GENERAL"
+  summary        String?
+  content        String?                @db.Text
+  fileUrl        String?
+  version        String                 @default("1.0")
+  isMandatoryAck Boolean                @default(false)
+  acknowledgments PolicyAcknowledgment[]
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+}
+
+model PolicyAcknowledgment {
+  id             String        @id @default(cuid())
+  policyId       String
+  policy         CompanyPolicy @relation(fields: [policyId], references: [id], onDelete: Cascade)
+  userId         String
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  acknowledgedAt DateTime      @default(now())
+
+  @@unique([policyId, userId])
+}
+
+model ExpenseClaim {
+  id            String    @id @default(cuid())
+  userId        String
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title         String
+  category      String    // "TRAVEL", "FOOD", "CLIENT_ENTERTAINMENT", "INTERNET", "OFFICE_SUPPLIES", "OTHER"
+  amount        Float
+  date          DateTime  @db.Date
+  receiptUrl    String?
+  description   String?
+  status        String    @default("PENDING") // "PENDING", "APPROVED", "REJECTED", "PAID"
+  approvedBy    String?
+  approvedAt    DateTime?
+  rejectionNote String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+model EmployeeSalaryStructure {
+  id                  String   @id @default(cuid())
+  userId              String   @unique
+  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  monthlyCtc          Float
+  basicPay            Float
+  hra                 Float
+  specialAllowance    Float
+  conveyanceAllowance Float    @default(0)
+  medicalAllowance    Float    @default(0)
+  pfEmployee          Float    @default(0)
+  pfEmployer          Float    @default(0)
+  professionalTax     Float    @default(0)
+  tds                 Float    @default(0)
+  effectiveFrom       DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 }
 
 enum VehicleStatus {
@@ -300,9 +654,12 @@ model Vehicle {
   fitnessExpiry   DateTime?
   notes           String?
 
-  assignments     VehicleAssignment[]
-  tickets         Ticket[]
-  createdAt       DateTime            @default(now())
+  assignments            VehicleAssignment[]
+  tickets                Ticket[]
+  groups                 Group[]             @relation("groupAssignedVehicle")
+  assignedInventoryItems InventoryItem[]
+  projects               Project[]           @relation("projectAssignedVehicle")
+  createdAt              DateTime            @default(now())
   updatedAt       DateTime            @updatedAt
 }
 
@@ -387,8 +744,10 @@ model Client {
   services         ClientService[]
   transactions     ClientTransaction[]
   businessHistory  BusinessHistory[]
-  tickets          Ticket[]
-  groups           Group[]
+  tickets                Ticket[]
+  groups                 Group[]
+  assignedInventoryItems InventoryItem[]
+  projects               Project[]           @relation("clientProjects")
 
   createdAt        DateTime            @default(now())
   updatedAt        DateTime            @updatedAt
@@ -462,9 +821,16 @@ model Group {
   clientId        String?
   client          Client?       @relation(fields: [clientId], references: [id], onDelete: SetNull)
 
+  // Service Vehicle Assignment
+  vehicleId       String?
+  vehicle         Vehicle?      @relation("groupAssignedVehicle", fields: [vehicleId], references: [id], onDelete: SetNull)
+
   members         GroupMember[]
   tickets         Ticket[]
   announcements   GroupAnnouncement[]
+  inventoryItems  InventoryItem[]   @relation("groupAssignedInventory")
+  projects        Project[]         @relation("groupAssignedProjects")
+  chatChannels    ChatChannel[]     @relation("groupChatChannel")
 
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
@@ -534,6 +900,7 @@ enum InventoryCondition {
   FAIR
   DAMAGED
   DEFECTIVE
+  NEEDS_REPAIR
 }
 
 enum InventoryStatus {
@@ -544,23 +911,73 @@ enum InventoryStatus {
 }
 
 model InventoryItem {
-  id           String             @id @default(cuid())
-  deviceName   String
-  modelNumber  String?
-  barcode      String             @unique
-  category     String?
-  condition    InventoryCondition @default(NEW)
-  status       InventoryStatus    @default(IN_STOCK)
-  buyDate      DateTime?          @db.Date
-  stockAmount  Int                @default(1)
-  unitPrice    Float?
-  supplier     String?
-  notes        String?
+  id             String             @id @default(cuid())
+  deviceName     String
+  modelNumber    String?
+  barcode        String             @unique
+  category       String?
+  condition      InventoryCondition @default(NEW)
+  status         InventoryStatus    @default(IN_STOCK)
+  buyDate        DateTime?          @db.Date
+  warrantyExpiry DateTime?          @db.Date
+  invoiceNo      String?
+  location       String?
+  stockAmount    Int                @default(1)
+  unitPrice      Float?
+  supplier       String?
+  notes          String?
 
-  tickets      TicketInventoryItem[]
+  // Field Installation & Retrieval Tracking
+  isInstalledAtSite Boolean         @default(false)
+  installedAt       DateTime?
+  installedTicketId String?
+  damageNotes       String?
+  retrievedAt       DateTime?
 
-  createdAt    DateTime           @default(now())
-  updatedAt    DateTime           @updatedAt
+  // Custody Assignment (Direct Employee, Client, Group, or Vehicle)
+  assignedUserId    String?
+  assignedUser      User?            @relation("userAssignedInventory", fields: [assignedUserId], references: [id], onDelete: SetNull)
+  assignedClientId  String?
+  assignedClient    Client?          @relation(fields: [assignedClientId], references: [id], onDelete: SetNull)
+  assignedGroupId   String?
+  assignedGroup     Group?           @relation("groupAssignedInventory", fields: [assignedGroupId], references: [id], onDelete: SetNull)
+  assignedVehicleId String?
+  assignedVehicle   Vehicle?         @relation(fields: [assignedVehicleId], references: [id], onDelete: SetNull)
+
+  projectId         String?
+  project           Project?         @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  tickets        TicketInventoryItem[]
+  logs           InventoryLog[]
+
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  @@index([status, condition])
+  @@index([assignedUserId])
+  @@index([assignedGroupId])
+  @@index([assignedClientId])
+  @@index([category])
+}
+
+enum InventoryLogAction {
+  CHECK_OUT
+  CHECK_IN
+  MAINTENANCE
+  RETIRED
+  CONDITION_CHANGE
+  NOTE
+}
+
+model InventoryLog {
+  id              String             @id @default(cuid())
+  inventoryItemId String
+  inventoryItem   InventoryItem      @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
+  action          InventoryLogAction
+  notes           String?
+  performedById   String?
+  performedBy     User?              @relation("inventoryLogUser", fields: [performedById], references: [id], onDelete: SetNull)
+  createdAt       DateTime           @default(now())
 }
 
 model TicketInventoryItem {
@@ -572,6 +989,20 @@ model TicketInventoryItem {
   quantity        Int           @default(1)
   notes           String?
   assignedAt      DateTime      @default(now())
+
+  // Installation & Return Verification
+  isInstalled     Boolean       @default(false)
+  installedAt     DateTime?
+  installedById   String?
+  installedLat    Float?
+  installedLng    Float?
+  installedAddress String?
+  proofPhoto      String?
+
+  isReturned      Boolean       @default(false)
+  returnedAt      DateTime?
+  returnCondition String?       // "GOOD", "DAMAGED", "NEEDS_REPAIR"
+  damageNotes     String?
 
   @@unique([ticketId, inventoryItemId])
 }
@@ -623,6 +1054,10 @@ model Ticket {
   vehicleId       String?
   vehicle         Vehicle?       @relation(fields: [vehicleId], references: [id], onDelete: SetNull)
 
+  // Linked Project / Government Tender
+  projectId       String?
+  project         Project?       @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
   // Assigned Inventory Devices
   inventoryItems  TicketInventoryItem[]
 
@@ -642,16 +1077,297 @@ model Ticket {
 
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
+
+  @@index([status, priority])
+  @@index([assignedUserId])
+  @@index([assignedGroupId])
+  @@index([clientId])
+  @@index([createdAt])
 }
 
 model TicketComment {
-  id        String   @id @default(cuid())
+  id        String          @id @default(cuid())
   ticketId  String
-  ticket    Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  ticket    Ticket          @relation(fields: [ticketId], references: [id], onDelete: Cascade)
   authorId  String
-  author    User     @relation("ticketCommentAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  author    User            @relation("ticketCommentAuthor", fields: [authorId], references: [id], onDelete: Cascade)
   content   String
   photo     String?
-  createdAt DateTime @default(now())
+  lat       Float?
+  lng       Float?
+  accuracy  Float?
+  address   String?
+  parentId  String?
+  parent    TicketComment?  @relation("CommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies   TicketComment[] @relation("CommentReplies")
+  createdAt DateTime        @default(now())
 }
 
+// ============================================================================
+// GOVERNMENT TENDERS & PROJECT MANAGEMENT
+// ============================================================================
+
+enum ProjectStatus {
+  PLANNING
+  SURVEY
+  MATERIAL_PROCUREMENT
+  IN_PROGRESS
+  TESTING_INSPECTION
+  COMMISSIONED
+  ON_HOLD
+  CANCELLED
+}
+
+enum ProjectPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum MilestoneStage {
+  SURVEY_BOQ
+  MATERIAL_DISPATCH
+  CIVIL_POLE_SETUP
+  FIBER_CABLING
+  CAMERA_MOUNTING
+  NETWORK_CONTROL_ROOM
+  JOINT_INSPECTION
+  HANDOVER_COMMISSIONING
+}
+
+enum MilestoneStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  DELAYED
+}
+
+enum SiteStatus {
+  SURVEYED
+  IN_PROGRESS
+  COMPLETED
+}
+
+model Project {
+  id              String          @id @default(cuid())
+  code            String          @unique // e.g. "PRJ-2026-001"
+  name            String
+  tenderNo        String?         // Government Tender Reference No
+  workOrderNo     String?         // Official Work Order / Sanction Order No
+  tenderAuthority String?         // e.g. "Municipal Corporation", "Smart City Ltd", "Police Dept"
+  description     String?
+  status          ProjectStatus   @default(PLANNING)
+  priority        ProjectPriority @default(MEDIUM)
+
+  // Financials & Commercials
+  contractValue   Float?          // Sanctioned Tender / Work Order Amount (₹)
+  emdAmount       Float?          // Earnest Money Deposit / Bank Guarantee
+  billingProgress Float?          @default(0) // Percentage of billing claimed/realized
+
+  // Geographical Location & Site Details
+  locationName    String?         // e.g. "Zone 4 Urban Surveillance"
+  address         String?
+  latitude        Float?
+  longitude       Float?
+
+  // Timeline
+  workOrderDate   DateTime?       @db.Date
+  startDate       DateTime?       @db.Date
+  targetEndDate   DateTime?       @db.Date
+  completedDate   DateTime?       @db.Date
+  progress        Int             @default(0) // Overall completion % (0 to 100)
+
+  // Client / Tender Authority Relation
+  clientId        String?
+  client          Client?         @relation("clientProjects", fields: [clientId], references: [id], onDelete: SetNull)
+
+  // Execution Team & Vehicle
+  groupId         String?
+  group           Group?          @relation("groupAssignedProjects", fields: [groupId], references: [id], onDelete: SetNull)
+
+  vehicleId       String?
+  vehicle         Vehicle?        @relation("projectAssignedVehicle", fields: [vehicleId], references: [id], onDelete: SetNull)
+
+  // Project Lead / Manager
+  managerId       String?
+  manager         User?           @relation("projectManager", fields: [managerId], references: [id], onDelete: SetNull)
+
+  // Creator
+  createdById     String
+  createdBy       User            @relation("projectCreator", fields: [createdById], references: [id])
+
+  // Sub-entities & Relations
+  milestones      ProjectMilestone[]
+  sites           ProjectSite[]
+  documents       ProjectDocument[]
+  inventoryItems  InventoryItem[]
+  tickets         Ticket[]
+
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  @@index([status, priority])
+  @@index([managerId])
+  @@index([clientId])
+  @@index([groupId])
+}
+
+model ProjectMilestone {
+  id              String          @id @default(cuid())
+  projectId       String
+  project         Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  title           String
+  description     String?
+  stage           MilestoneStage  @default(SURVEY_BOQ)
+  status          MilestoneStatus @default(PENDING)
+  order           Int             @default(1)
+  progress        Int             @default(0) // 0 to 100
+
+  dueDate         DateTime?       @db.Date
+  completedAt     DateTime?
+
+  notes           String?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+}
+
+model ProjectSite {
+  id              String          @id @default(cuid())
+  projectId       String
+  project         Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  name            String          // e.g. "Junction 12 - ANPR Camera Pole #04"
+  address         String?
+  latitude        Float?
+  longitude       Float?
+
+  camerasPlanned  Int             @default(1)
+  camerasInstalled Int            @default(0)
+  status          SiteStatus      @default(SURVEYED)
+
+  poleType        String?         // "OCTAGONAL_POLE", "SWAGED_POLE", "WALL_MOUNT", "EXISTING_ELECTRIC_POLE"
+  powerSource     String?         // "SOLAR", "GRID_EB_METER", "UPS_BACKUP"
+  notes           String?
+
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+}
+
+model ProjectDocument {
+  id              String          @id @default(cuid())
+  projectId       String
+  project         Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  title           String
+  category        String          // "WORK_ORDER", "TENDER_NOTICE", "SURVEY_BOQ", "JIR_INSPECTION", "COMPLETION_CERTIFICATE", "INVOICE", "OTHER"
+  fileUrl         String
+  fileSize        String?
+  
+  uploadedById    String?
+  uploadedBy      User?           @relation("projectDocUploader", fields: [uploadedById], references: [id], onDelete: SetNull)
+
+  createdAt       DateTime        @default(now())
+}
+
+// ============================================================================
+// REAL-TIME INTERNAL TEAM CHAT & MESSAGING
+// ============================================================================
+
+enum ChatChannelType {
+  CHANNEL
+  DIRECT
+  GROUP_LINKED
+}
+
+enum ChatMessageType {
+  TEXT
+  IMAGE
+  FILE
+  SYSTEM
+  LOCATION
+}
+
+enum ChatParticipantRole {
+  ADMIN
+  MEMBER
+}
+
+model ChatChannel {
+  id              String             @id @default(cuid())
+  name            String?            // for public/private channels e.g. "general-announcements"
+  type            ChatChannelType    @default(CHANNEL)
+  description     String?
+  isPrivate       Boolean            @default(false)
+  avatar          String?
+  
+  createdById     String?
+  createdBy       User?              @relation("createdChatChannels", fields: [createdById], references: [id], onDelete: SetNull)
+
+  linkedGroupId   String?
+  linkedGroup     Group?             @relation("groupChatChannel", fields: [linkedGroupId], references: [id], onDelete: SetNull)
+
+  lastMessageAt   DateTime?          @default(now())
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  participants    ChatParticipant[]
+  messages        ChatMessage[]
+}
+
+model ChatParticipant {
+  id          String              @id @default(cuid())
+  channelId   String
+  channel     ChatChannel         @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role        ChatParticipantRole @default(MEMBER)
+  lastReadAt  DateTime?           @default(now())
+  isMuted     Boolean             @default(false)
+  joinedAt    DateTime            @default(now())
+
+  @@unique([channelId, userId])
+}
+
+model ChatMessage {
+  id          String              @id @default(cuid())
+  channelId   String
+  channel     ChatChannel         @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  senderId    String
+  sender      User                @relation("sentChatMessages", fields: [senderId], references: [id], onDelete: Cascade)
+  
+  content     String
+  messageType ChatMessageType     @default(TEXT)
+  fileUrl     String?
+  fileName    String?
+  fileSize    String?
+  fileMime    String?
+
+  replyToId   String?
+  replyTo     ChatMessage?        @relation("messageReplies", fields: [replyToId], references: [id], onDelete: SetNull)
+  replies     ChatMessage[]       @relation("messageReplies")
+
+  isEdited    Boolean             @default(false)
+  isDeleted   Boolean             @default(false)
+
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  reactions   ChatMessageReaction[]
+
+  @@index([channelId, createdAt])
+  @@index([senderId])
+}
+
+model ChatMessageReaction {
+  id          String              @id @default(cuid())
+  messageId   String
+  message     ChatMessage         @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  emoji       String
+  createdAt   DateTime            @default(now())
+
+  @@unique([messageId, userId, emoji])
+}

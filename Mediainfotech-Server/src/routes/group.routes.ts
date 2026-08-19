@@ -13,6 +13,11 @@ import {
   createAnnouncementComment,
   deleteAnnouncementComment,
 } from '../controllers/group.controller';
+import {
+  getGroupInventoryItems,
+  assignGroupInventoryItems,
+  returnGroupInventoryItem,
+} from '../controllers/inventory.controller';
 import { authenticateToken } from '../middlewares/auth.middleware';
 import { requirePermission } from '../middlewares/rbac.middleware';
 
@@ -36,5 +41,10 @@ router.post('/:id/announcements', requirePermission('groups', 'update'), createG
 router.delete('/:id/announcements/:announcementId', requirePermission('groups', 'update'), deleteGroupAnnouncement);
 router.post('/:id/announcements/:announcementId/comments', requirePermission('groups', 'read'), createAnnouncementComment);
 router.delete('/:id/announcements/:announcementId/comments/:commentId', requirePermission('groups', 'read'), deleteAnnouncementComment);
+
+// Group Hardware Inventory & Assets
+router.get('/:id/inventory', requirePermission('groups', 'read'), getGroupInventoryItems);
+router.post('/:id/inventory', requirePermission('groups', 'update'), assignGroupInventoryItems);
+router.post('/:id/inventory/:itemId/return', requirePermission('groups', 'update'), returnGroupInventoryItem);
 
 export default router;

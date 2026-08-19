@@ -4,8 +4,9 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '@/contexts/auth-context';
 import { useTheme } from '@/contexts/theme-context';
 import { Bell, LogOut, User, Search, Shield, Calendar as CalendarIcon, MessageSquare, Sun, Moon } from 'lucide-react';
-import Link from 'next/link';
 import { api } from '@/lib/api';
+import Link from 'next/link';
+import { NotificationDropdown } from './NotificationDropdown';
 
 export const Header: React.FC = () => {
   const { user, logout } = useAuth();
@@ -77,15 +78,8 @@ export const Header: React.FC = () => {
           )}
         </Link>
 
-        {/* Notification Bell */}
-        <Link
-          href="/notifications"
-          className="relative p-2 rounded-xl text-slate-400 hover:text-white dark:hover:text-white light:text-slate-600 light:hover:text-slate-900 hover:bg-slate-800 dark:hover:bg-slate-800 light:hover:bg-slate-100 transition"
-          title="Notifications"
-        >
-          <Bell size={20} />
-          <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
-        </Link>
+        {/* Real-time Categorized Notification Dropdown */}
+        <NotificationDropdown />
 
         {/* Profile Dropdown */}
         <div className="relative">

@@ -270,18 +270,70 @@ export function MapPicker({
   const handleSelectSuggestion = (sug: any) => {
     setShowDropdown(false);
     setSearchQuery(sug.display_name);
-    setStatusMessage('Site location updated!');
+    setStatusMessage(`📍 Location Locked: ${sug.name || sug.display_name.split(',')[0]}`);
 
     const lat = parseFloat(sug.lat);
     const lng = parseFloat(sug.lon);
 
-    updatePinPosition(lat, lng, false);
+    if (markerRef.current) {
+      markerRef.current.setLatLng([lat, lng]);
+    }
+    if (leafletMapRef.current) {
+      if (leafletMapRef.current.flyTo) {
+        leafletMapRef.current.flyTo([lat, lng], 16, { duration: 1 });
+      } else {
+        leafletMapRef.current.setView([lat, lng], 16);
+      }
+    }
+
     onLocationSelect({
       latitude: parseFloat(lat.toFixed(6)),
       longitude: parseFloat(lng.toFixed(6)),
       address: sug.display_name,
       locationName: sug.name || sug.display_name.split(',')[0],
     });
+  };
+
+  const handleKeyDown = async (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (suggestions.length > 0) {
+        handleSelectSuggestion(suggestions[0]);
+      } else if (searchQuery.trim().length >= 2) {
+        setLoading(true);
+        try {
+          const photonRes = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(searchQuery.trim())}&limit=1`);
+          const photonData = await photonRes.json();
+          if (photonData && photonData.features && photonData.features.length > 0) {
+            const f = photonData.features[0];
+            const p = f.properties;
+            const parts = [p.name, p.street, p.district, p.city, p.state, p.country].filter(Boolean);
+            const displayName = parts.join(', ');
+            handleSelectSuggestion({
+              display_name: displayName || p.name,
+              name: p.name || displayName.split(',')[0],
+              lat: f.geometry.coordinates[1],
+              lon: f.geometry.coordinates[0],
+            });
+          } else {
+            const nomRes = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(searchQuery.trim())}&limit=1`);
+            const nomData = await nomRes.json();
+            if (nomData && nomData.length > 0) {
+              handleSelectSuggestion({
+                display_name: nomData[0].display_name,
+                name: nomData[0].display_name.split(',')[0],
+                lat: parseFloat(nomData[0].lat),
+                lon: parseFloat(nomData[0].lon),
+              });
+            }
+          }
+        } catch (err) {
+          console.error('Enter search geocode error:', err);
+        } finally {
+          setLoading(false);
+        }
+      }
+    }
   };
 
   // Detect Current Browser GPS Position
@@ -315,7 +367,7 @@ export function MapPicker({
         <div className="flex items-center justify-between">
           <label className="text-[11px] font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
             <MapPin size={13} className="text-emerald-400" />
-            <span>CCTV Installation Site Search & Map Picker</span>
+            <span>Search Map Location & Auto-Pin (e.g. Barasat)</span>
           </label>
           <button
             type="button"
@@ -335,22 +387,23 @@ export function MapPicker({
             type="text"
             value={searchQuery}
             onChange={(e) => handleSearchChange(e.target.value)}
+            onKeyDown={handleKeyDown}
             onFocus={() => setShowDropdown(true)}
-            placeholder="Type place name, landmark, or address (e.g. Patuli Lake Side, Paris, Sector 62 Noida)..."
-            className="w-full pl-9 pr-9 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
+            placeholder="Type place name (e.g. Barasat, Salt Lake Sector 5, Kolkata, Dankuni Toll)..."
+            className="w-full pl-9 pr-9 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 shadow-inner"
           />
           {loading && (
-            <Loader2 size={14} className="absolute right-3 top-1/2 -translate-y-1/2 animate-spin text-blue-400" />
+            <Loader2 size={14} className="absolute right-3 top-1/2 -translate-y-1/2 animate-spin text-indigo-400" />
           )}
 
           {/* Suggestions Dropdown */}
           {showDropdown && suggestions.length > 0 && (
-            <div className="absolute z-50 left-0 right-0 mt-1 rounded-2xl bg-slate-900 border border-blue-500/40 shadow-2xl overflow-hidden max-h-52 overflow-y-auto divide-y divide-slate-800/60">
+            <div className="absolute z-50 left-0 right-0 mt-1 rounded-2xl bg-slate-900 border border-indigo-500/40 shadow-2xl overflow-hidden max-h-52 overflow-y-auto divide-y divide-slate-800/60">
               {suggestions.map((sug, idx) => (
                 <div
                   key={idx}
                   onClick={() => handleSelectSuggestion(sug)}
-                  className="p-2.5 text-xs text-slate-200 hover:bg-blue-600/20 hover:text-white cursor-pointer transition flex items-start space-x-2.5"
+                  className="p-2.5 text-xs text-slate-200 hover:bg-indigo-600/20 hover:text-white cursor-pointer transition flex items-start space-x-2.5"
                 >
                   <MapPin size={14} className="text-emerald-400 mt-0.5 shrink-0" />
                   <div>

@@ -27,6 +27,20 @@ body {
 }
 
 /* =========================================================================
+   CLEAN NUMBER INPUTS (REMOVE CLUNKY BROWSER SPINNERS)
+   ========================================================================= */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+/* =========================================================================
    PREMIUM FLOATING PILL SCROLLBAR (LINEAR / MACOS / VERCEL STYLE)
    ========================================================================= */
 

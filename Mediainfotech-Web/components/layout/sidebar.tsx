@@ -37,7 +37,7 @@ export const Sidebar: React.FC<{ collapsed: boolean; setCollapsed: (c: boolean) 
   setCollapsed,
 }) => {
   const pathname = usePathname();
-  const { user, hasPermission } = useAuth();
+  const { user, hasPermission, hasRole } = useAuth();
 
   const companyName = process.env.NEXT_PUBLIC_COMPANY_NAME || 'NetTech';
   const companyTagline = process.env.NEXT_PUBLIC_COMPANY_TAGLINE || 'Management System';
@@ -58,9 +58,9 @@ export const Sidebar: React.FC<{ collapsed: boolean; setCollapsed: (c: boolean) 
       href: '/hr',
       icon: Building2,
       subItems: [
-        ...(hasPermission('users', 'read') ? [{ title: 'Employees', href: '/hr/employees' }] : []),
+        ...(hasRole('ADMIN', 'MANAGER', 'HR') || hasPermission('users', 'create') ? [{ title: 'Employees', href: '/hr/employees' }] : []),
         { title: 'Leave Requests', href: '/hr/leave' },
-        ...(hasPermission('vehicles', 'read') ? [{ title: 'Vehicles', href: '/hr/vehicles' }] : []),
+        ...(hasRole('ADMIN', 'MANAGER', 'HR') || hasPermission('vehicles', 'create') ? [{ title: 'Vehicles', href: '/hr/vehicles' }] : []),
         { title: 'Payslips', href: '/hr/payslips' },
       ],
     },
@@ -97,8 +97,6 @@ export const Sidebar: React.FC<{ collapsed: boolean; setCollapsed: (c: boolean) 
       title: 'Projects',
       href: '/projects',
       icon: FolderGit2,
-      badge: 'Soon',
-      badgeColor: 'bg-indigo-500/20 text-indigo-400 border border-indigo-500/30',
     },
     {
       title: 'Notifications',

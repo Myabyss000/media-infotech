@@ -25,7 +25,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="dark">
+    <html lang="en" className="dark" data-scroll-behavior="smooth">
       <head>
         <link rel="icon" href="/Icon.png?v=3" type="image/png" sizes="any" />
         <link rel="shortcut icon" href="/Icon.png?v=3" type="image/png" />

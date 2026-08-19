@@ -3,6 +3,10 @@ import jwt from 'jsonwebtoken';
 const JWT_SECRET = process.env.JWT_SECRET || 'super-secret-access-token-key-2026';
 const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || 'super-secret-refresh-token-key-2026';
 
+if (process.env.NODE_ENV === 'production' && (!process.env.JWT_SECRET || !process.env.JWT_REFRESH_SECRET)) {
+  console.warn('⚠️ SECURITY WARNING: JWT_SECRET or JWT_REFRESH_SECRET is not explicitly set in production environment variables.');
+}
+
 export interface JwtPayload {
   userId: string;
   username: string;

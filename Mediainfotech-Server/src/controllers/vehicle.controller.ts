@@ -5,11 +5,51 @@ import { VehicleStatus } from '@prisma/client';
 
 export const getVehicles = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
+    const userRole = (req.user?.role || '').toUpperCase();
+    const isPrivileged = ['ADMIN', 'MANAGER', 'HR'].includes(userRole);
+
+    let where: any = {};
+    if (!isPrivileged) {
+      const userGroups = await prisma.groupMember.findMany({
+        where: { userId: req.user?.id },
+        select: { groupId: true },
+      });
+      const groupIds = userGroups.map((g) => g.groupId);
+
+      where = {
+        OR: [
+          {
+            assignments: {
+              some: {
+                userId: req.user?.id,
+                returnedAt: null,
+              },
+            },
+          },
+          ...(groupIds.length > 0
+            ? [
+                {
+                  groups: {
+                    some: {
+                      id: { in: groupIds },
+                    },
+                  },
+                },
+              ]
+            : []),
+        ],
+      };
+    }
+
     const vehicles = await prisma.vehicle.findMany({
+      where,
       include: {
         assignments: {
           where: { returnedAt: null },
           include: { user: { select: { id: true, firstName: true, lastName: true, phone: true } } },
+        },
+        groups: {
+          select: { id: true, name: true, color: true },
         },
       },
       orderBy: { createdAt: 'desc' },
@@ -22,7 +62,7 @@ export const getVehicles = async (req: AuthenticatedRequest, res: Response): Pro
 
 export const createVehicle = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
-    const { registrationNo, type, make, model, year, fuelType, notes } = req.body;
+    const { registrationNo, type, make, model, year, fuelType, status, notes } = req.body;
     if (!registrationNo || !type || !make || !model) {
       res.status(400).json({ error: 'registrationNo, type, make, and model are required' });
       return;
@@ -37,13 +77,51 @@ export const createVehicle = async (req: AuthenticatedRequest, res: Response): P
         year: year ? parseInt(year, 10) : null,
         fuelType,
         notes,
-        status: VehicleStatus.AVAILABLE,
+        status: (status as VehicleStatus) || VehicleStatus.AVAILABLE,
       },
     });
 
     res.status(201).json(vehicle);
   } catch (error) {
+    console.error('createVehicle error:', error);
     res.status(500).json({ error: 'Failed to create vehicle' });
+  }
+};
+
+export const updateVehicle = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const id = req.params.id as string;
+    const { registrationNo, type, make, model, year, fuelType, status, notes } = req.body;
+
+    const updated = await prisma.vehicle.update({
+      where: { id },
+      data: {
+        ...(registrationNo && { registrationNo }),
+        ...(type && { type }),
+        ...(make && { make }),
+        ...(model && { model }),
+        ...(year !== undefined && { year: year ? parseInt(year, 10) : null }),
+        ...(fuelType !== undefined && { fuelType }),
+        ...(status && { status: status as VehicleStatus }),
+        ...(notes !== undefined && { notes }),
+      },
+    });
+
+    res.json(updated);
+  } catch (error) {
+    console.error('updateVehicle error:', error);
+    res.status(500).json({ error: 'Failed to update vehicle' });
+  }
+};
+
+export const deleteVehicle = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const id = req.params.id as string;
+    await prisma.vehicle.delete({ where: { id } });
+    res.json({ message: 'Vehicle deleted successfully' });
+  } catch (error) {
+    console.error('deleteVehicle error:', error);
+    res.status(500).json({ error: 'Failed to delete vehicle' });
   }
 };
 
